@@ -1,0 +1,62 @@
+{
+  "name": "dynamixpay-contracts",
+  "version": "1.0.0",
+  "description": "DynamixPay Treasury Manager - Gas-optimized smart contracts for Cronos x402",
+  "type": "module",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "test:coverage": "hardhat coverage",
+    "test:gas": "REPORT_GAS=true hardhat test",
+    "test:watch": "hardhat watch test",
+    "deploy": "hardhat run scripts/deploy.ts",
+    "deploy:testnet": "hardhat run scripts/deploy.ts --network cronosTestnet",
+    "deploy:mainnet": "hardhat run scripts/deploy.ts --network cronosMainnet",
+    "deploy:ignition": "hardhat ignition deploy ignition/modules/TreasuryManager.ts",
+    "deploy:ignition:testnet": "hardhat ignition deploy ignition/modules/TreasuryManager.ts --network cronosTestnet",
+    "deploy:ignition:mainnet": "hardhat ignition deploy ignition/modules/TreasuryManager.ts --network cronosMainnet",
+    "verify": "hardhat run scripts/verify.ts",
+    "verify:testnet": "hardhat run scripts/verify.ts --network cronosTestnet",
+    "verify:mainnet": "hardhat run scripts/verify.ts --network cronosMainnet",
+    "clean": "hardhat clean",
+    "node": "hardhat node",
+    "console": "hardhat console",
+    "flatten": "hardhat flatten",
+    "size": "hardhat size-contracts",
+    "check": "npm run compile && npm run test",
+    "lint": "solhint 'contracts/**/*.sol'",
+    "format": "prettier --write 'contracts/**/*.sol' 'test/**/*.ts' 'scripts/**/*.ts'"
+  },
+  "keywords": [
+    "cronos",
+    "x402",
+    "treasury",
+    "payroll",
+    "blockchain",
+    "hardhat",
+    "solidity"
+  ],
+  "author": "DynamixPay Team",
+  "license": "MIT",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ethers": "^4.0.4",
+    "@nomicfoundation/hardhat-ignition": "^3.0.7",
+    "@nomicfoundation/hardhat-toolbox-mocha-ethers": "^3.0.2",
+    "@openzeppelin/contracts": "^5.5.0",
+    "@types/chai": "^4.3.20",
+    "@types/chai-as-promised": "^8.0.2",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.19.7",
+    "chai": "^5.3.3",
+    "ethers": "^6.16.0",
+    "forge-std": "github:foundry-rs/forge-std#v1.9.4",
+    "hardhat": "^3.1.5",
+    "mocha": "^11.7.5",
+    "typescript": "~5.8.2",
+    "dotenv": "^17.2.3"
+  },
+"engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  }
+}

@@ -1,4 +1,4 @@
-# 🚀 DynamixPay: AI-Powered Treasury Automation for Cronos
+# 🚀 DynamixPay: x402-Powered Payroll & Treasury Automation for Cronos Blockchain
 
 **Dynamic Payroll & Treasury Management Agent | Cronos x402 Hackathon Submission**
 

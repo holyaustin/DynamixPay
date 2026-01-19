@@ -1,4 +1,81 @@
 .env
 node_modules
 dist
+*.
+
+
+
+# ===========================================
+# .gitignore
+# ===========================================
+# Hardhat
+Hardhat/node_modules
+Hardhat/artifacts
+Hardhat/cache
+Hardhat/coverage
+Hardhat/coverage.json
+Hardhat/typechain-types
+
+# Deployment artifacts
+Hardhat/deployments/*.json
+Hardhat/!deployments/.gitkeep
+
+# Environment variables
+.env
+.env.local
+Hardhat/.env
+App/.env.local
+App/.env
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build outputs
+dist
 *.log
+*.tgz
+
+# Hardhat Ignition
+Hardhat/ignition/deployments
+
+# Frontend App dependencies
+App/node_modules
+App/.pnp
+App/.pnp.*
+App/.yarn/*
+App/!.yarn/patches
+App/!.yarn/plugins
+App/!.yarn/releases
+App/!.yarn/versions
+
+# testing
+App//coverage
+
+# next.js
+App//.next/
+App/out/
+
+# production
+App//build
+
+# misc
+App/.DS_Store
+App/*.pem
+
+# debug
+App/npm-debug.log*
+
+# vercel
+App/.vercel
+
+# typescript
+App/*.tsbuildinfo
+App/next-env.d.ts
+
