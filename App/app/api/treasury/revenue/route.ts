@@ -1,8 +1,14 @@
 // app/api/treasury/revenue/route.ts
 import { NextRequest, NextResponse } from 'next/server'
-import { createPublicClient, http, parseAbi, parseUnits } from 'viem'
+import { 
+  createPublicClient, 
+  http, 
+  parseAbi, 
+  parseUnits,
+  createWalletClient  // Add this import
+} from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { cronosTestnet } from '@/lib/blockchain/provider'
+import { cronosTestnet } from '@/config/chains'  // Changed from '@/lib/blockchain/provider'
 import { CONTRACTS } from '@/config/contracts'
 
 // USDC ABI for balance checking
@@ -24,7 +30,7 @@ const REVENUE_ABI = parseAbi([
 
 const publicClient = createPublicClient({
   chain: cronosTestnet,
-  transport: http(process.env.NEXT_PUBLIC_CRONOS_RPC)
+  transport: http(process.env.NEXT_PUBLIC_CRONOS_RPC || 'https://evm-t3.cronos.org')
 })
 
 // GET: Get revenue data and thresholds
@@ -139,7 +145,7 @@ export async function POST(request: NextRequest) {
     const walletClient = createWalletClient({
       account: adminAccount,
       chain: cronosTestnet,
-      transport: http(process.env.NEXT_PUBLIC_CRONOS_RPC)
+      transport: http(process.env.NEXT_PUBLIC_CRONOS_RPC || 'https://evm-t3.cronos.org')
     })
 
     // Update revenue threshold

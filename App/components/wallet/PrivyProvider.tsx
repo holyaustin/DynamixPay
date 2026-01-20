@@ -1,4 +1,4 @@
-// app/providers.tsx
+// App/components/wallet/PrivyProvider.tsx
 "use client";
 
 import { PrivyProvider } from "@privy-io/react-auth";
@@ -42,7 +42,7 @@ const wagmiConfig = createConfig({
   ssr: true,
 });
 
-export function Providers({ children }: { children: React.ReactNode }) {
+export function PrivyProviders({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(() => new QueryClient());
 
   return (

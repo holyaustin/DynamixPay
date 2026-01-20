@@ -2,7 +2,7 @@
 import type { Metadata } from 'next'
 import { Inter } from 'next/font/google'
 import './globals.css'
-import { PrivyProvider } from '@/components/wallet/PrivyProvider'
+import { PrivyProviders } from '@/components/wallet/PrivyProvider'
 import { Header } from '@/components/layout/Header'
 import { Footer } from '@/components/layout/Footer'
 
@@ -21,13 +21,13 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className={`${inter.className} min-h-screen flex flex-col`}>
-        <PrivyProvider>
+        <PrivyProviders>
           <Header />
           <main className="flex-1">
             {children}
           </main>
           <Footer />
-        </PrivyProvider>
+        </PrivyProviders>
       </body>
     </html>
   )

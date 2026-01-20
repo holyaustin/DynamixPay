@@ -1,8 +1,23 @@
 // config/chains.ts
-import { createPublicClient, http } from 'viem'
-import { cronosTestnet } from '@/config/chains'
+import { defineChain } from 'viem'
 
-export const publicClient = createPublicClient({
-  chain: cronosTestnet,
-  transport: http(process.env.NEXT_PUBLIC_CRONOS_RPC || 'https://evm-t3.cronos.org'),
+export const cronosTestnet = defineChain({
+  id: 338,
+  name: 'Cronos Testnet',
+  nativeCurrency: {
+    decimals: 18,
+    name: 'Cronos',
+    symbol: 'tCRO',
+  },
+  rpcUrls: {
+    default: {
+      http: ['https://evm-t3.cronos.org'],
+    },
+  },
+  blockExplorers: {
+    default: {
+      name: 'CronosScan',
+      url: 'https://cronos.org/explorer/testnet3',
+    },
+  },
 })

@@ -64,10 +64,12 @@ export async function POST(request: NextRequest) {
       }, { status: 400 })
     }
 
-    // Initialize facilitator
+    // Initialize facilitator - FIXED: removed facilitatorUrl parameter
     const facilitator = new Facilitator({
-      network: paymentRequirements.network || 'cronos-testnet',
-      facilitatorUrl: process.env.NEXT_PUBLIC_X402_FACILITATOR_URL
+      network: paymentRequirements.network || 'cronos-testnet'
+      // The facilitator automatically uses the correct URL based on network
+      // For testnet: https://x402-facilitator-testnet.cronos.org
+      // For mainnet: https://x402-facilitator.cronos.org
     })
 
     // Verify the payment
@@ -115,7 +117,21 @@ export async function POST(request: NextRequest) {
     // Convert txHash string to bytes32
     const txHash = settleResult.txHash || ''
     const txHashBytes32 = txHash.startsWith('0x') ? txHash as `0x${string}` : `0x${txHash}` as `0x${string}`
+    
+    // Get x402PaymentId - should be in paymentRequirements.extra.paymentId
     const x402PaymentId = paymentRequirements.extra?.paymentId || ''
+    
+    // Convert x402PaymentId to bytes32 if it's not already
+    let paymentIdBytes32: `0x${string}`
+    if (x402PaymentId.startsWith('0x')) {
+      paymentIdBytes32 = x402PaymentId as `0x${string}`
+    } else if (x402PaymentId) {
+      // Pad the string to 32 bytes (64 hex chars + 0x prefix)
+      const hexId = Buffer.from(x402PaymentId).toString('hex')
+      paymentIdBytes32 = `0x${hexId.padStart(64, '0').slice(0, 64)}` as `0x${string}`
+    } else {
+      paymentIdBytes32 = '0x' as `0x${string}`
+    }
 
     // Call markPaymentSettled on Treasury contract
     const markSettledHash = await walletClient.writeContract({
@@ -124,7 +140,7 @@ export async function POST(request: NextRequest) {
       functionName: 'markPaymentSettled',
       args: [
         BigInt(requestId),
-        x402PaymentId as `0x${string}`,
+        paymentIdBytes32,
         txHashBytes32
       ]
     })
