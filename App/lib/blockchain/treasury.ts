@@ -1,7 +1,53 @@
 // lib/blockchain/treasury.ts
-import { readContract } from 'viem/actions'
 import { publicClient } from './provider'
-import { CONTRACTS, TREASURY_ABI, USDC_ABI } from '@/config/contracts'
+import { CONTRACTS } from '@/config/contracts'
+
+// Properly typed ABIs
+const USDC_ABI = [
+  {
+    name: 'balanceOf',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'account', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+] as const
+
+const TREASURY_ABI = [
+  {
+    name: 'getActivePayees',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [
+      { name: '', type: 'address[]' },
+      { name: '', type: 'uint256[]' },
+      { name: '', type: 'uint256[]' },
+      { name: '', type: 'uint256[]' },
+    ],
+  },
+  {
+    name: 'getTotalAccrued',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    name: 'revenueThreshold',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    name: 'shouldTriggerPayroll',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'currentRevenue', type: 'uint256' }],
+    outputs: [{ name: '', type: 'bool' }],
+  },
+] as const
 
 export interface Payee {
   address: string
@@ -13,47 +59,64 @@ export interface Payee {
 
 export async function getTreasuryBalance(): Promise<bigint> {
   try {
-    const balance = await readContract(publicClient, {
-      address: CONTRACTS.USDC,
+    console.log('Fetching treasury balance from:', CONTRACTS.USDC)
+    console.log('Treasury manager address:', CONTRACTS.TREASURY_MANAGER)
+    
+    const balance = await publicClient.readContract({
+      address: CONTRACTS.USDC as `0x${string}`,
       abi: USDC_ABI,
       functionName: 'balanceOf',
-      args: [CONTRACTS.TREASURY_MANAGER],
+      args: [CONTRACTS.TREASURY_MANAGER as `0x${string}`],
     })
     
+    console.log('Balance result:', balance)
+    
+    // Return directly - Viem already returns the correct type
     return balance as bigint
   } catch (error) {
     console.error('Failed to get treasury balance:', error)
-    throw new Error('Failed to fetch treasury balance from blockchain')
+    // Return 0 instead of throwing to prevent breaking the UI
+    return BigInt(0)
   }
 }
 
 export async function getActivePayees(): Promise<Payee[]> {
   try {
-    const result = await readContract(publicClient, {
-      address: CONTRACTS.TREASURY_MANAGER,
+    console.log('Fetching active payees from:', CONTRACTS.TREASURY_MANAGER)
+    
+    const result = await publicClient.readContract({
+      address: CONTRACTS.TREASURY_MANAGER as `0x${string}`,
       abi: TREASURY_ABI,
       functionName: 'getActivePayees',
-    })
+    }) as readonly [`0x${string}`[], readonly bigint[], readonly bigint[], readonly bigint[]]
     
-    const [addresses, salaries, lastPayments, accrued] = result as [string[], bigint[], bigint[], bigint[]]
+    console.log('Payees result:', result)
+    
+    if (!result || result.length !== 4) {
+      console.warn('Unexpected payees result format:', result)
+      return []
+    }
+    
+    const [addresses, salaries, lastPayments, accrued] = result
     
     return addresses.map((address, index) => ({
       address,
-      salary: salaries[index],
-      lastPayment: new Date(Number(lastPayments[index]) * 1000),
-      accrued: accrued[index],
+      salary: salaries[index] || BigInt(0),
+      lastPayment: new Date(Number(lastPayments[index] || BigInt(0)) * 1000),
+      accrued: accrued[index] || BigInt(0),
       active: true
     }))
   } catch (error) {
     console.error('Failed to get active payees:', error)
-    throw new Error('Failed to fetch payees from blockchain')
+    // Return empty array instead of throwing
+    return []
   }
 }
 
 export async function getRevenueThreshold(): Promise<bigint> {
   try {
-    const threshold = await readContract(publicClient, {
-      address: CONTRACTS.TREASURY_MANAGER,
+    const threshold = await publicClient.readContract({
+      address: CONTRACTS.TREASURY_MANAGER as `0x${string}`,
       abi: TREASURY_ABI,
       functionName: 'revenueThreshold',
     })
@@ -61,29 +124,33 @@ export async function getRevenueThreshold(): Promise<bigint> {
     return threshold as bigint
   } catch (error) {
     console.error('Failed to get revenue threshold:', error)
-    throw new Error('Failed to fetch revenue threshold from blockchain')
+    return BigInt(0)
   }
 }
 
 export async function getTotalAccrued(): Promise<bigint> {
   try {
-    const accrued = await readContract(publicClient, {
-      address: CONTRACTS.TREASURY_MANAGER,
+    console.log('Fetching total accrued from:', CONTRACTS.TREASURY_MANAGER)
+    
+    const accrued = await publicClient.readContract({
+      address: CONTRACTS.TREASURY_MANAGER as `0x${string}`,
       abi: TREASURY_ABI,
       functionName: 'getTotalAccrued',
     })
     
+    console.log('Total accrued result:', accrued)
+    
     return accrued as bigint
   } catch (error) {
     console.error('Failed to get total accrued:', error)
-    throw new Error('Failed to fetch total accrued from blockchain')
+    return BigInt(0)
   }
 }
 
 export async function shouldTriggerPayroll(currentRevenue: bigint): Promise<boolean> {
   try {
-    const shouldTrigger = await readContract(publicClient, {
-      address: CONTRACTS.TREASURY_MANAGER,
+    const shouldTrigger = await publicClient.readContract({
+      address: CONTRACTS.TREASURY_MANAGER as `0x${string}`,
       abi: TREASURY_ABI,
       functionName: 'shouldTriggerPayroll',
       args: [currentRevenue],
@@ -92,7 +159,7 @@ export async function shouldTriggerPayroll(currentRevenue: bigint): Promise<bool
     return shouldTrigger as boolean
   } catch (error) {
     console.error('Failed to check payroll trigger:', error)
-    throw new Error('Failed to check payroll trigger condition')
+    return false
   }
 }
 

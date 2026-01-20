@@ -7,16 +7,15 @@ export default function HomePage() {
   return (
     <div className="relative overflow-hidden">
       {/* Gradient background */}
-      <div className="absolute inset-0 bg-gradient-to-b from-background via-background to-primary-900/10" />
-      
+<div className="absolute inset-0 bg-linear-to-tr from-background via-agent-glow to-background" />      
       <Container>
         {/* Hero Section */}
-        <div className="relative py-20 md:py-32 text-center">
+        <div className="relative py-7 md:py-14 text-center">
           <div className="max-w-4xl mx-auto">
-            <div className="inline-flex items-center px-4 py-2 rounded-full bg-primary-900/30 border border-primary-800 mb-8">
-              <div className="w-2 h-2 rounded-full bg-primary-400 animate-pulse mr-2"></div>
-              <span className="text-primary-300 text-sm font-medium">
-                Built for Cronos x402 Hackathon
+            <div className="inline-flex items-center px-7 py-7 rounded-full bg-primary-900/30 border border-primary-800">
+              <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse mr-2"></div>
+              <span className="text-primary-300 text-xl font-medium animate-bounce">
+                AI-Enabled Payroll & Treasury Automation Launched!
               </span>
             </div>
             

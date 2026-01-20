@@ -5,6 +5,7 @@ import './globals.css'
 import { PrivyProviders } from '@/components/wallet/PrivyProvider'
 import { Header } from '@/components/layout/Header'
 import { Footer } from '@/components/layout/Footer'
+import { Suspense } from 'react' // Import Suspense
 
 const inter = Inter({ subsets: ['latin'] })
 
@@ -21,13 +22,15 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className={`${inter.className} min-h-screen flex flex-col`}>
-        <PrivyProviders>
-          <Header />
-          <main className="flex-1">
-            {children}
-          </main>
-          <Footer />
-        </PrivyProviders>
+        <Suspense fallback={<div>Loading...</div>}> {/* Add Suspense */}
+          <PrivyProviders>
+            <Header />
+            <main className="flex-1">
+              {children}
+            </main>
+            <Footer />
+          </PrivyProviders>
+        </Suspense>
       </body>
     </html>
   )
