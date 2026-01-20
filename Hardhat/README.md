@@ -417,3 +417,56 @@ Contributions are welcome! Please follow these guidelines:
 ⭐ Star this repo if you find it useful! ⭐
 
 </div>
+
+
+npx hardhat run scripts/deploy.ts --network cronosTestnet
+
+[dotenv@17.2.3] injecting env (18) from .env -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+🚀 Starting deployment to cronosTestnet
+============================================================
+📝 Deployer address: 0x2c3b2B2325610a6814f2f822D0bF4DAB8CF16e16
+💰 Deployer balance: 50.0 CRO
+
+🛠️  Deploying TreasuryManager...
+📊 Payment Token (USDC): 0xc01efAaF7C5C61bEbFAeb358E1161b537b8bC0e0
+🤖 x402 Facilitator: 0x0000000000000000000000000000000000000001
+✅ TreasuryManager deployed to: 0x084622e6970BBcBA510454C6145313c2993ED9E4
+🔗 View on Explorer: https://explorer.cronos.org/testnet/address/0x084622e6970BBcBA510454C6145313c2993ED9E4
+
+⚙️  Performing initial setup...
+👥 Adding sample payees...
+✅ Added 2 sample payees
+
+📋 Active Payees:
+  1. 0x70997970C51812dc3A010C7d01b50e0d17dc79C8: 3000.0 USDC/month
+  2. 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC: 5000.0 USDC/month
+
+📁 Deployment info saved to: /home/augustineonuora/Dapps-Empty/2026/Jan2026/DynamixPay/Hardhat/deployments/cronosTestnet.json
+
+🔍 Verification Commands:
+
+  Treasury Manager:
+  npx hardhat verify --network cronosTestnet 0x084622e6970BBcBA510454C6145313c2993ED9E4 0xc01efAaF7C5C61bEbFAeb358E1161b537b8bC0e0 "0x0000000000000000000000000000000000000001"
+
+⛽ Gas Statistics:
+  Total Gas Cost: 0.88631049375 CRO
+  Remaining Balance: 49.11368950625 CRO
+
+============================================================
+🎉 DEPLOYMENT COMPLETE!
+============================================================
+
+📊 Contract Summary:
+  Treasury Manager: 0x084622e6970BBcBA510454C6145313c2993ED9E4
+  Payment Token:    0xc01efAaF7C5C61bEbFAeb358E1161b537b8bC0e0
+  x402 Facilitator: 0x0000000000000000000000000000000000000001
+
+🚀 Next Steps:
+  1. Fund the treasury with USDC
+  2. Update x402 facilitator address when available
+  3. Add production payees
+  4. Integrate with backend services
+  5. Set up monitoring and alerts
+  6. Verify contracts on block explorer
+
+============================================================

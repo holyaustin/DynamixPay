@@ -2,8 +2,21 @@ import hardhatToolboxMochaEthersPlugin from "@nomicfoundation/hardhat-toolbox-mo
 import { configVariable, defineConfig } from "hardhat/config";
 import "@nomicfoundation/hardhat-ignition";
 
+import hardhatEthers from "@nomicfoundation/hardhat-ethers";
+import hardhatTypechain from "@nomicfoundation/hardhat-typechain";
+import hardhatMocha from "@nomicfoundation/hardhat-mocha";
+import hardhatEthersChaiMatchers from "@nomicfoundation/hardhat-ethers-chai-matchers";
+import hardhatNetworkHelpers from "@nomicfoundation/hardhat-network-helpers";
+
 export default defineConfig({
-  plugins: [hardhatToolboxMochaEthersPlugin],
+  plugins: [
+    hardhatToolboxMochaEthersPlugin,
+    hardhatEthers,
+    hardhatTypechain,
+    hardhatMocha,
+    hardhatEthersChaiMatchers,
+    hardhatNetworkHelpers,
+  ],
   solidity: {
     profiles: {
       default: {
@@ -83,5 +96,10 @@ export default defineConfig({
     cache: "./cache",
     artifacts: "./artifacts",
     ignition: "./ignition",
+  },
+    verify: {
+    etherscan: {
+      apiKey: configVariable("ETHERSCAN_API_KEY"),
+    },
   },
 });
