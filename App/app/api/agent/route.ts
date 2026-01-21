@@ -36,22 +36,28 @@ export async function POST(request: NextRequest) {
         x402Agent.stop()
         break
       case 'trigger':
-        await x402Agent.triggerPayroll()
+        await x402Agent.manualTriggerPayroll() // Fixed method name
+        break
+      case 'status':
+        // Return status without changing it
         break
       default:
-        throw new Error('Invalid action')
+        throw new Error(`Invalid action: ${action}. Valid actions: start, stop, trigger, status`)
     }
     
     return NextResponse.json({
       success: true,
       message: `Agent ${action} executed`,
-      status: x402Agent.getStatus()
+      status: x402Agent.getStatus(),
+      timestamp: new Date().toISOString()
     })
   } catch (error: any) {
+    console.error('POST /api/agent error:', error)
     return NextResponse.json({
       success: false,
       error: 'Failed to execute agent action',
-      details: error.message
+      details: error.message,
+      timestamp: new Date().toISOString()
     }, { status: 500 })
   }
 }
