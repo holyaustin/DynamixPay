@@ -1,6 +1,7 @@
 // components/layout/Footer.tsx
 import { Container } from './Container'
 import { Github, Twitter, MessageCircle, ExternalLink } from 'lucide-react'
+import Image from 'next/image';
 
 export function Footer() {
   const currentYear = new Date().getFullYear()
@@ -13,8 +14,17 @@ export function Footer() {
             {/* Brand */}
             <div className="space-y-4">
               <div className="flex items-center space-x-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary-500 to-primary-600">
-                  <div className="h-6 w-6 text-white">💰</div>
+                <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-primary-500 to-primary-600">
+                  <div className="h-14 w-14 text-white">
+                  <Image
+                    src="/logo3.png" // Path relative to the public directory
+                    width={40}
+                    height={40}
+                    alt="Picture of the author"
+                   
+                  />
+
+                  </div>
                 </div>
                 <div>
                   <span className="text-lg font-bold text-white">DynamixPay</span>

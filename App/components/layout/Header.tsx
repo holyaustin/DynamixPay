@@ -3,6 +3,7 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
+import Image from 'next/image';
 import { usePathname, useRouter } from 'next/navigation'
 import { Menu, X, Wallet, Home, Users, BarChart, DollarSign } from 'lucide-react'
 import { usePrivy } from '@privy-io/react-auth'
@@ -38,8 +39,15 @@ export function Header() {
           {/* Logo */}
           <div className="flex items-center">
             <Link href="/" className="flex items-center space-x-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary-500 to-primary-600">
-                <Wallet className="h-6 w-6 text-white" />
+              <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-primary-500 to-primary-600">
+                  <Image
+                    src="/logo3.png" // Path relative to the public directory
+                    width={40}
+                    height={40}
+                    alt="Picture of the author"
+                   
+                  />
+      
               </div>
               <div className="hidden sm:block">
                 <span className="text-xl font-bold text-white">DynamixPay</span>
