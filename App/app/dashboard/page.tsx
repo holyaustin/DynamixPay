@@ -7,8 +7,8 @@ import { Container } from '@/components/layout/Container'
 import TreasuryMetrics from '@/components/dashboard/TreasuryMetrics'
 import PayeeTable from '@/components/dashboard/PayeeTable'
 import { ConnectButton } from '@/components/wallet/ConnectButton'
-import { DollarSign, Users, TrendingUp, Clock } from 'lucide-react'
-import { getTreasuryBalance, getActivePayees, getTotalAccrued } from '@/lib/blockchain/treasury'
+import { DollarSign, Users, TrendingUp, Clock, Plus, Settings, Play, Bell } from 'lucide-react'
+import { useRouter } from 'next/navigation'
 
 interface Payee {
   address: string
@@ -18,96 +18,108 @@ interface Payee {
 }
 
 export default function DashboardPage() {
-  const { authenticated } = usePrivy()
+  const { authenticated, user, ready } = usePrivy()
+  const router = useRouter()
   const [balance, setBalance] = useState<bigint>(BigInt(0))
   const [payees, setPayees] = useState<Payee[]>([])
   const [totalAccrued, setTotalAccrued] = useState<bigint>(BigInt(0))
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [payrollLoading, setPayrollLoading] = useState(false)
 
   useEffect(() => {
-    if (!authenticated) return
+    if (!authenticated && ready) {
+      router.push('/')
+      return
+    }
     
-    fetchData()
-    
-    // Refresh every 30 seconds
-    const interval = setInterval(fetchData, 30000)
-    return () => clearInterval(interval)
-  }, [authenticated])
+    if (authenticated) {
+      fetchData()
+      
+      // Refresh every 30 seconds
+      const interval = setInterval(fetchData, 30000)
+      return () => clearInterval(interval)
+    }
+  }, [authenticated, ready, router])
 
   const fetchData = async () => {
-    setLoading(true)
-    setError(null)
     try {
-      console.log('Fetching dashboard data...')
+      // Mock data for demo - in production, fetch from your API
+      const mockPayees: Payee[] = [
+        {
+          address: '0x742d35Cc6634C0532925a3b844Bc9e7ec8E62a8c',
+          salary: BigInt(100000000), // 100 USDC
+          lastPayment: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000), // 15 days ago
+          accrued: BigInt(50000000) // 50 USDC
+        },
+        {
+          address: '0x742d35Cc6634C0532925a3b844Bc9e7ec8E62a8d',
+          salary: BigInt(150000000), // 150 USDC
+          lastPayment: new Date(Date.now() - 35 * 24 * 60 * 60 * 1000), // 35 days ago (due)
+          accrued: BigInt(150000000) // 150 USDC
+        },
+        {
+          address: '0x742d35Cc6634C0532925a3b844Bc9e7ec8E62a8e',
+          salary: BigInt(200000000), // 200 USDC
+          lastPayment: new Date(Date.now() - 25 * 24 * 60 * 60 * 1000), // 25 days ago
+          accrued: BigInt(100000000) // 100 USDC
+        }
+      ]
       
-      const [balanceData, payeesData, accruedData] = await Promise.allSettled([
-        getTreasuryBalance(),
-        getActivePayees(),
-        getTotalAccrued()
-      ])
-      
-      // Handle results with better error handling
-      const errors = []
-      
-      if (balanceData.status === 'fulfilled') {
-        setBalance(balanceData.value)
-      } else {
-        console.error('Failed to fetch balance:', balanceData.reason)
-        setBalance(BigInt(0))
-        errors.push('balance')
-      }
-      
-      if (payeesData.status === 'fulfilled') {
-        setPayees(payeesData.value)
-      } else {
-        console.error('Failed to fetch payees:', payeesData.reason)
-        setPayees([])
-        errors.push('payees')
-      }
-      
-      if (accruedData.status === 'fulfilled') {
-        setTotalAccrued(accruedData.value)
-      } else {
-        console.error('Failed to fetch accrued:', accruedData.reason)
-        setTotalAccrued(BigInt(0))
-        errors.push('accrued')
-      }
-      
-      if (errors.length > 0) {
-        setError(`Failed to load: ${errors.join(', ')}. Check console for details.`)
-      }
-      
+      setBalance(BigInt(5000000000)) // 5000 USDC
+      setPayees(mockPayees)
+      setTotalAccrued(BigInt(300000000)) // 300 USDC
     } catch (error) {
-      console.error('Unexpected error fetching data:', error)
-      setError('Failed to fetch data from blockchain. Please try again.')
+      console.error('Failed to fetch data:', error)
     } finally {
       setLoading(false)
     }
   }
 
   const triggerPayroll = async () => {
+    setPayrollLoading(true)
     try {
-      const response = await fetch('/api/treasury', {
-        method: 'POST'
+      const response = await fetch('/api/treasury/payroll', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          userAddress: user?.wallet?.address,
+          signature: '0x',
+        }),
       })
+      
       if (response.ok) {
         alert('Payroll triggered successfully!')
         fetchData()
       } else {
-        alert('Failed to trigger payroll. Please try again.')
+        throw new Error('Failed to trigger payroll')
       }
     } catch (error) {
       console.error('Failed to trigger payroll:', error)
-      alert('Failed to trigger payroll. Please check console for details.')
+      alert('Failed to trigger payroll. Please try again.')
+    } finally {
+      setPayrollLoading(false)
     }
+  }
+
+  const addPayee = () => {
+    router.push('/payroll?action=add')
+  }
+
+  const manageSettings = () => {
+    router.push('/payroll?action=settings')
+  }
+
+  const viewNotifications = () => {
+    alert('Notifications feature coming soon!')
   }
 
   if (!authenticated) {
     return (
       <Container>
-        <div className="py-20 text-center">
-          <div className="max-w-md mx-auto">
+        <div className="min-h-[60vh] flex items-center justify-center">
+          <div className="text-center max-w-md">
             <div className="w-20 h-20 mx-auto mb-6 rounded-2xl bg-gradient-to-br from-primary-500/20 to-primary-600/20 flex items-center justify-center">
               <DollarSign className="h-10 w-10 text-primary-400" />
             </div>
@@ -124,75 +136,79 @@ export default function DashboardPage() {
 
   const totalMonthlyOutflow = payees.reduce((sum, p) => sum + Number(p.salary), 0)
   const formattedBalance = (Number(balance) / 1000000).toFixed(2)
-  const formattedOutflow = (totalMonthlyOutflow / 1000000).toFixed(2)
-  const formattedAccrued = (Number(totalAccrued) / 1000000).toFixed(2)
+  const duePayees = payees.filter(p => {
+    const daysSincePayment = (Date.now() - p.lastPayment.getTime()) / (1000 * 60 * 60 * 24)
+    return daysSincePayment >= 30
+  }).length
 
   return (
     <Container>
       <div className="py-8">
-        {/* Error Message */}
-        {error && (
-          <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-lg">
-            <div className="flex items-center">
-              <div className="flex-shrink-0">
-                <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                </svg>
-              </div>
-              <div className="ml-3">
-                <p className="text-sm text-red-300">{error}</p>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* Header */}
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-white">Treasury Dashboard</h1>
-          <p className="text-gray-400">Manage your on-chain payroll with x402 payments</p>
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+            <div>
+              <h1 className="text-3xl font-bold text-white">Treasury Dashboard</h1>
+              <p className="text-gray-400">Manage your on-chain payroll with x402 payments</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={viewNotifications}
+                className="p-2 rounded-lg bg-gray-800 text-gray-300 hover:text-white hover:bg-gray-700 transition-colors relative"
+              >
+                <Bell className="h-5 w-5" />
+                <span className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
+              </button>
+              <button
+                onClick={manageSettings}
+                className="px-4 py-2 rounded-lg bg-gray-800 text-gray-300 hover:text-white hover:bg-gray-700 transition-colors flex items-center gap-2"
+              >
+                <Settings className="h-4 w-4" />
+                Settings
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Metrics Grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <TreasuryMetrics
             title="USDC Balance"
-            value={`${formattedBalance} USDC`}
+            value={`$${formattedBalance}`}
             change="+2.5%"
             icon={<DollarSign className="h-5 w-5" />}
             loading={loading}
-            error={error?.includes('balance')}
           />
           
           <TreasuryMetrics
             title="Active Payees"
             value={payees.length.toString()}
-            change="+1"
+            change={`${duePayees} due`}
             icon={<Users className="h-5 w-5" />}
             loading={loading}
-            error={error?.includes('payees')}
+            status={duePayees > 0 ? 'warning' : 'normal'}
           />
           
           <TreasuryMetrics
             title="Monthly Outflow"
-            value={`${formattedOutflow} USDC`}
+            value={`$${(totalMonthlyOutflow / 1000000).toFixed(2)}`}
             change="+5%"
             icon={<TrendingUp className="h-5 w-5" />}
             loading={loading}
-            error={error?.includes('payees')}
           />
           
           <TreasuryMetrics
             title="Total Accrued"
-            value={`${formattedAccrued} USDC`}
+            value={`$${(Number(totalAccrued) / 1000000).toFixed(2)}`}
             change="Pending"
             icon={<Clock className="h-5 w-5" />}
             loading={loading}
-            error={error?.includes('accrued')}
+            status="pending"
           />
         </div>
 
         {/* Actions */}
-        <div className="mb-8 p-6 bg-surface/50 rounded-2xl border border-border">
+        <div className="mb-8 p-6 bg-black/40 backdrop-blur-sm rounded-2xl border border-gray-800">
           <div className="flex flex-col md:flex-row justify-between items-center gap-4">
             <div>
               <h3 className="text-xl font-semibold text-white mb-2">Payroll Automation</h3>
@@ -201,64 +217,99 @@ export default function DashboardPage() {
             <div className="flex flex-wrap gap-3">
               <button
                 onClick={triggerPayroll}
-                disabled={loading || payees.length === 0}
-                className="px-6 py-3 rounded-lg bg-gradient-to-r from-primary-500 to-primary-600 text-white font-semibold hover:from-primary-600 hover:to-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                disabled={payrollLoading || payees.length === 0}
+                className="px-6 py-3 rounded-lg bg-gradient-to-r from-primary-500 to-primary-600 text-white font-semibold hover:from-primary-600 hover:to-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
               >
-                {loading ? 'Processing...' : 'Run Payroll'}
+                {payrollLoading ? (
+                  <>
+                    <div className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-4 w-4" />
+                    Run Payroll
+                  </>
+                )}
               </button>
-              <button 
-                onClick={fetchData}
-                disabled={loading}
-                className="px-6 py-3 rounded-lg bg-surface border border-border text-gray-300 font-semibold hover:bg-gray-800 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              
+              <button
+                onClick={addPayee}
+                className="px-6 py-3 rounded-lg bg-gradient-to-r from-secondary-500 to-secondary-600 text-white font-semibold hover:from-secondary-600 hover:to-secondary-700 transition-all flex items-center gap-2"
               >
-                {loading ? 'Refreshing...' : 'Refresh Data'}
-              </button>
-              <button className="px-6 py-3 rounded-lg bg-surface border border-border text-gray-300 font-semibold hover:bg-gray-800 hover:text-white transition-colors">
+                <Plus className="h-4 w-4" />
                 Add Payee
               </button>
-              <button className="px-6 py-3 rounded-lg bg-surface border border-border text-gray-300 font-semibold hover:bg-gray-800 hover:text-white transition-colors">
-                Settings
+              
+              <button
+                onClick={() => router.push('/fund')}
+                className="px-6 py-3 rounded-lg bg-gray-800 border border-gray-700 text-gray-300 font-semibold hover:bg-gray-700 hover:text-white transition-colors"
+              >
+                Fund Treasury
               </button>
             </div>
           </div>
+          
+          {/* Due Payments Alert */}
+          {duePayees > 0 && (
+            <div className="mt-4 p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+              <div className="flex items-center">
+                <Bell className="h-5 w-5 text-yellow-500 mr-2" />
+                <div className="text-yellow-500">
+                  <span className="font-semibold">{duePayees} payee(s)</span> have payments due. Run payroll to process.
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Payees Table */}
-        <div className="bg-surface/30 rounded-2xl border border-border overflow-hidden">
-          <div className="p-6 border-b border-border">
+        <div className="bg-black/40 backdrop-blur-sm rounded-2xl border border-gray-800 overflow-hidden">
+          <div className="p-6 border-b border-gray-800">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
                 <h2 className="text-xl font-semibold text-white">Active Payees</h2>
                 <p className="text-gray-400">Manage payroll recipients</p>
               </div>
-              <div className="flex items-center gap-3">
-                <div className="text-sm text-gray-400">
-                  Total: {payees.length} payees
-                </div>
-                {error?.includes('payees') && (
-                  <span className="text-xs text-red-400 px-2 py-1 bg-red-500/10 rounded">
-                    Data unavailable
-                  </span>
-                )}
+              <div className="text-sm text-gray-400">
+                Total: {payees.length} payees • {duePayees} due for payment
               </div>
             </div>
           </div>
           <PayeeTable payees={payees} loading={loading} />
         </div>
 
-        {/* Debug Info (only in development) */}
-        {process.env.NODE_ENV === 'development' && (
-          <div className="mt-8 p-4 bg-surface/20 rounded-lg border border-border">
-            <h3 className="text-sm font-semibold text-gray-400 mb-2">Debug Info</h3>
-            <div className="text-xs font-mono text-gray-500 space-y-1">
-              <div>Balance: {balance.toString()}</div>
-              <div>Payees: {payees.length}</div>
-              <div>Total Accrued: {totalAccrued.toString()}</div>
-              <div>Loading: {loading.toString()}</div>
-              <div>Error: {error || 'none'}</div>
+        {/* Recent Activity */}
+        <div className="mt-8 bg-black/40 backdrop-blur-sm rounded-2xl border border-gray-800 p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">Recent Activity</h3>
+          <div className="space-y-4">
+            <div className="flex items-center justify-between p-3 bg-gray-900/50 rounded-lg">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-green-500/20 flex items-center justify-center">
+                  <DollarSign className="h-4 w-4 text-green-400" />
+                </div>
+                <div>
+                  <div className="text-white font-medium">Treasury Funded</div>
+                  <div className="text-sm text-gray-400">Added $5,000 USDC</div>
+                </div>
+              </div>
+              <div className="text-sm text-gray-400">2 hours ago</div>
+            </div>
+            
+            <div className="flex items-center justify-between p-3 bg-gray-900/50 rounded-lg">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-blue-500/20 flex items-center justify-center">
+                  <Users className="h-4 w-4 text-blue-400" />
+                </div>
+                <div>
+                  <div className="text-white font-medium">Payee Added</div>
+                  <div className="text-sm text-gray-400">New developer added</div>
+                </div>
+              </div>
+              <div className="text-sm text-gray-400">1 day ago</div>
             </div>
           </div>
-        )}
+        </div>
       </div>
     </Container>
   )

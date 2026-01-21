@@ -5,7 +5,9 @@ import { PrivyProvider } from "@privy-io/react-auth";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WagmiProvider, createConfig, http } from "wagmi";
 import { Toaster } from "react-hot-toast";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { usePrivy } from "@privy-io/react-auth";
 
 // Cronos Testnet Chain Configuration
 const cronosTestnet = {
@@ -42,21 +44,44 @@ const wagmiConfig = createConfig({
   ssr: true,
 });
 
+// Auth redirect component (must be inside PrivyProvider)
+function AuthRedirect() {
+  const router = useRouter();
+  const { authenticated, ready, user } = usePrivy(); // Destructure `user` as well
+
+  useEffect(() => {
+    if (!ready) return; // Wait for Privy to be ready
+
+    if (authenticated) {
+      console.log("✅ User authenticated, redirecting to dashboard...");
+      console.log("User logged in:", user); // You can log the user object here
+      router.push("/dashboard");
+    } else {
+      console.log("✅ User not authenticated, staying on the current page or handling accordingly...");
+      // Note: The code you provided redirects to "/" if not authenticated.
+      // If you want that behavior, uncomment the next line.
+      // router.push("/");
+    }
+  }, [authenticated, ready, user, router]); // Added `user` to the dependency array
+
+  return null;
+}
+
 export function PrivyProviders({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(() => new QueryClient());
+  // Removed the router declaration here, as it's not needed for the provider itself
 
   return (
     <PrivyProvider
       appId={process.env.NEXT_PUBLIC_PRIVY_APP_ID || ""}
       config={{
         // Login methods
-        loginMethods: ["email", "wallet", "google", "twitter"],
+        loginMethods: ["email", "wallet", "google", "twitter"] as const, // Added `as const` for stricter typing
         
         // Embedded wallets configuration
         embeddedWallets: {
           ethereum: {
             createOnLogin: "users-without-wallets" as const,
-           
           },
         },
         
@@ -72,9 +97,11 @@ export function PrivyProviders({ children }: { children: React.ReactNode }) {
         defaultChain: cronosTestnet,
         supportedChains: [cronosTestnet],
       }}
+      // The `onSuccess` prop has been removed. Authentication state is handled by `AuthRedirect`.
     >
       <WagmiProvider config={wagmiConfig}>
         <QueryClientProvider client={queryClient}>
+          <AuthRedirect />
           {children}
           <Toaster
             position="top-right"

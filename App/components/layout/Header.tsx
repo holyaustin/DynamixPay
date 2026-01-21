@@ -3,8 +3,9 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
-import { Menu, X, Wallet, Home, Users, BarChart } from 'lucide-react'
+import { usePathname, useRouter } from 'next/navigation'
+import { Menu, X, Wallet, Home, Users, BarChart, DollarSign } from 'lucide-react'
+import { usePrivy } from '@privy-io/react-auth'
 import { ConnectButton } from '@/components/wallet/ConnectButton'
 import { Container } from '@/components/layout/Container'
 
@@ -12,14 +13,26 @@ const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: Home },
   { name: 'Payroll', href: '/payroll', icon: Users },
   { name: 'Analytics', href: '/analytics', icon: BarChart },
+  { name: 'Fund', href: '/fund', icon: DollarSign },
 ]
 
 export function Header() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const pathname = usePathname()
+  const router = useRouter()
+  const { authenticated } = usePrivy()
+
+  const handleNavigation = (href: string) => {
+    if (!authenticated && href !== '/') {
+      router.push('/')
+      return
+    }
+    router.push(href)
+    setMobileMenuOpen(false)
+  }
 
   return (
-    <header className="sticky top-0 z-50 w-full border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+    <header className="sticky top-0 z-50 w-full border-b border-gray-900 bg-black/95 backdrop-blur supports-[backdrop-filter]:bg-black/80">
       <Container>
         <div className="flex h-16 items-center justify-between">
           {/* Logo */}
@@ -43,18 +56,19 @@ export function Header() {
               const isActive = pathname === item.href
               const Icon = item.icon
               return (
-                <Link
+                <button
                   key={item.name}
-                  href={item.href}
+                  onClick={() => handleNavigation(item.href)}
                   className={`flex items-center px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                     isActive
-                      ? 'bg-surface text-white'
-                      : 'text-gray-300 hover:bg-surface hover:text-white'
-                  }`}
+                      ? 'bg-gray-800 text-white'
+                      : 'text-gray-300 hover:bg-gray-800 hover:text-white'
+                  } ${!authenticated ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  disabled={!authenticated && item.href !== '/'}
                 >
                   <Icon className="mr-2 h-4 w-4" />
                   {item.name}
-                </Link>
+                </button>
               )
             })}
           </nav>
@@ -81,25 +95,25 @@ export function Header() {
 
         {/* Mobile menu */}
         {mobileMenuOpen && (
-          <div className="md:hidden py-4 border-t border-border animate-fade-in">
+          <div className="md:hidden py-4 border-t border-gray-900 animate-fade-in">
             <div className="space-y-2">
               {navigation.map((item) => {
                 const isActive = pathname === item.href
                 const Icon = item.icon
                 return (
-                  <Link
+                  <button
                     key={item.name}
-                    href={item.href}
-                    className={`flex items-center px-4 py-3 rounded-lg text-base font-medium ${
+                    onClick={() => handleNavigation(item.href)}
+                    className={`flex items-center w-full px-4 py-3 rounded-lg text-base font-medium ${
                       isActive
-                        ? 'bg-surface text-white'
-                        : 'text-gray-300 hover:bg-surface hover:text-white'
-                    }`}
-                    onClick={() => setMobileMenuOpen(false)}
+                        ? 'bg-gray-800 text-white'
+                        : 'text-gray-300 hover:bg-gray-800 hover:text-white'
+                    } ${!authenticated ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    disabled={!authenticated && item.href !== '/'}
                   >
                     <Icon className="mr-3 h-5 w-5" />
                     {item.name}
-                  </Link>
+                  </button>
                 )
               })}
             </div>

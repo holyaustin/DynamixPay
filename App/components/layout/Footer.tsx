@@ -1,12 +1,12 @@
 // components/layout/Footer.tsx
 import { Container } from './Container'
-import { Github, Twitter, MessageCircle } from 'lucide-react'
+import { Github, Twitter, MessageCircle, ExternalLink } from 'lucide-react'
 
 export function Footer() {
   const currentYear = new Date().getFullYear()
 
   return (
-    <footer className="mt-auto border-t border-surface bg-background">
+    <footer className="mt-auto border-t border-gray-900 bg-black/90 backdrop-blur-sm">
       <Container>
         <div className="py-8">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
@@ -26,80 +26,7 @@ export function Footer() {
               <p className="text-sm text-gray-400">
                 AI-powered payroll & treasury automation on Cronos
               </p>
-            </div>
-
-            {/* Links */}
-            <div>
-              <h3 className="text-sm font-semibold text-white mb-4">Product</h3>
-              <ul className="space-y-3 text-sm">
-                <li>
-                  <a
-                    href="/dashboard"
-                    className="text-gray-400 hover:text-white transition-colors"
-                  >
-                    Dashboard
-                  </a>
-                </li>
-                <li>
-                  <a
-                    href="/payroll"
-                    className="text-gray-400 hover:text-white transition-colors"
-                  >
-                    Payroll
-                  </a>
-                </li>
-                <li>
-                  <a
-                    href="/analytics"
-                    className="text-gray-400 hover:text-white transition-colors"
-                  >
-                    Analytics
-                  </a>
-                </li>
-              </ul>
-            </div>
-
-            {/* Resources */}
-            <div>
-              <h3 className="text-sm font-semibold text-white mb-4">Resources</h3>
-              <ul className="space-y-3 text-sm">
-                <li>
-                  <a
-                    href="https://docs.cronos.org/cronos-x402-facilitator/introduction"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-gray-400 hover:text-white transition-colors"
-                  >
-                    x402 Docs
-                  </a>
-                </li>
-                <li>
-                  <a
-                    href="https://github.com/cronos-labs/x402-examples"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-gray-400 hover:text-white transition-colors"
-                  >
-                    Examples
-                  </a>
-                </li>
-                <li>
-                  <a
-                    href="https://cronos.org/explorer/testnet3/address/0x084622e6970BBcBA510454C6145313c2993ED9E4"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-gray-400 hover:text-white transition-colors"
-                  >
-                    Contract
-                  </a>
-                </li>
-              </ul>
-            </div>
-
-            {/* Social */}
-            <div>
-              <h3 className="text-sm font-semibold text-white mb-4">Connect</h3>
-              <div className="flex space-x-4">
+              <div className="flex space-x-3">
                 <a
                   href="https://github.com"
                   target="_blank"
@@ -126,16 +53,128 @@ export function Footer() {
                 </a>
               </div>
             </div>
+
+            {/* Product */}
+            <div>
+              <h3 className="text-sm font-semibold text-white mb-4">Product</h3>
+              <ul className="space-y-3 text-sm">
+                <li>
+                  <a
+                    href="/dashboard"
+                    className="text-gray-400 hover:text-white transition-colors flex items-center"
+                  >
+                    Dashboard
+                  </a>
+                </li>
+                <li>
+                  <a
+                    href="/payroll"
+                    className="text-gray-400 hover:text-white transition-colors flex items-center"
+                  >
+                    Payroll
+                  </a>
+                </li>
+                <li>
+                  <a
+                    href="/analytics"
+                    className="text-gray-400 hover:text-white transition-colors flex items-center"
+                  >
+                    Analytics
+                  </a>
+                </li>
+                <li>
+                  <a
+                    href="/fund"
+                    className="text-gray-400 hover:text-white transition-colors flex items-center"
+                  >
+                    Fund Treasury
+                  </a>
+                </li>
+              </ul>
+            </div>
+
+            {/* Resources */}
+            <div>
+              <h3 className="text-sm font-semibold text-white mb-4">Resources</h3>
+              <ul className="space-y-3 text-sm">
+                <li>
+                  <a
+                    href="https://docs.cronos.org/cronos-x402-facilitator/introduction"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-gray-400 hover:text-white transition-colors flex items-center"
+                  >
+                    x402 Docs
+                    <ExternalLink className="ml-1 h-3 w-3" />
+                  </a>
+                </li>
+                <li>
+                  <a
+                    href="https://github.com/cronos-labs/x402-examples"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-gray-400 hover:text-white transition-colors flex items-center"
+                  >
+                    Examples
+                    <ExternalLink className="ml-1 h-3 w-3" />
+                  </a>
+                </li>
+                <li>
+                  <a
+                    href="https://cronos.org/explorer/testnet3/address/0x084622e6970BBcBA510454C6145313c2993ED9E4"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-gray-400 hover:text-white transition-colors flex items-center"
+                  >
+                    Contract
+                    <ExternalLink className="ml-1 h-3 w-3" />
+                  </a>
+                </li>
+                <li>
+                  <a
+                    href="https://cronos.org/faucet"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-gray-400 hover:text-white transition-colors flex items-center"
+                  >
+                    Testnet Faucet
+                    <ExternalLink className="ml-1 h-3 w-3" />
+                  </a>
+                </li>
+              </ul>
+            </div>
+
+            {/* Contract Info */}
+            <div>
+              <h3 className="text-sm font-semibold text-white mb-4">Contract</h3>
+              <div className="p-3 bg-gray-900/50 rounded-lg border border-gray-800">
+                <div className="text-xs text-gray-400 mb-1">Treasury Manager</div>
+                <div className="font-mono text-xs text-white break-all">
+                  0x084622e6970BBcBA510454C6145313c2993ED9E4
+                </div>
+                <a
+                  href="https://cronos.org/explorer/testnet3/address/0x084622e6970BBcBA510454C6145313c2993ED9E4"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center text-xs text-primary-400 hover:text-primary-300 mt-2"
+                >
+                  View on Explorer
+                  <ExternalLink className="ml-1 h-3 w-3" />
+                </a>
+              </div>
+            </div>
           </div>
 
           {/* Bottom */}
-          <div className="mt-8 pt-8 border-t border-surface">
+          <div className="mt-8 pt-8 border-t border-gray-800">
             <div className="flex flex-col md:flex-row justify-between items-center space-y-4 md:space-y-0">
               <p className="text-sm text-gray-500">
                 © {currentYear} DynamixPay. Built for Cronos x402 Hackathon.
               </p>
-              <div className="text-sm text-gray-500">
-                Contract: 0x084622e6970BBcBA510454C6145313c2993ED9E4
+              <div className="flex items-center space-x-4 text-sm text-gray-500">
+                <span>Testnet Only</span>
+                <span>•</span>
+                <span>Version 1.0.0</span>
               </div>
             </div>
           </div>
