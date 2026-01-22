@@ -1,4 +1,4 @@
-//app/payroll/page.tsx
+// app/payroll/page.tsx
 'use client'
 
 import { useState, useEffect } from 'react'
@@ -8,11 +8,13 @@ import { ConnectButton } from '@/components/wallet/ConnectButton'
 import { 
   DollarSign, Users, Clock, CheckCircle, 
   AlertCircle, Play, Pause, RefreshCw,
-  Plus, Settings, Wallet
+  Plus, Settings, Wallet, ExternalLink,
+  Info
 } from 'lucide-react'
 import { CONTRACTS, TREASURY_ABI } from '@/config/contracts'
-import { getActivePayees, addPayee, createPaymentRequests } from '@/lib/blockchain/treasury'
+import { getActivePayees, addPayee, createPaymentRequests, updateRevenueThreshold } from '@/lib/blockchain/treasury'
 import { getBalance } from '@/lib/blockchain/ethers-utils'
+import { x402Agent } from '@/lib/agent/x402-agent'
 
 interface PayeeForm {
   address: string
@@ -31,11 +33,14 @@ export default function PayrollPage() {
   const [userWalletBalance, setUserWalletBalance] = useState<string>('0.00')
   const [treasuryBalance, setTreasuryBalance] = useState<string>('0.00')
   const [error, setError] = useState<string>('')
+  const [revenueThreshold, setRevenueThreshold] = useState<string>('10000')
+  const [updatingThreshold, setUpdatingThreshold] = useState(false)
 
   useEffect(() => {
     if (authenticated) {
       fetchPayrollData()
       fetchUserBalance()
+      checkAgentStatus()
     }
   }, [authenticated])
 
@@ -45,7 +50,14 @@ export default function PayrollPage() {
       
       // Fetch active payees
       const payees = await getActivePayees()
-      setActivePayees(payees)
+      
+      // Filter out first two system payees and only show payees added by current user
+      // In a real app, you would track which payees were added by which user
+      const filteredPayees = payees.slice(2).filter(payee => 
+        payee.active // Only active payees
+      )
+      
+      setActivePayees(filteredPayees)
       
       // Fetch payment requests from contract
       // Note: This would require querying events in production
@@ -76,7 +88,21 @@ export default function PayrollPage() {
       const balance = await usdcContract.balanceOf(CONTRACTS.TREASURY_MANAGER)
       setTreasuryBalance(ethers.formatUnits(balance, 6))
     } catch (error) {
-      console.error('Failed to fetch treasury balance:', error)
+      console.error('Failed to fetch treasury threshold:', error)
+    }
+  }
+
+  const checkAgentStatus = async () => {
+    try {
+      const response = await fetch('/api/agent', {
+        method: 'GET'
+      })
+      const data = await response.json()
+      if (data.success) {
+        setIsRunning(data.data.status.isRunning || false)
+      }
+    } catch (error) {
+      console.error('Failed to check agent status:', error)
     }
   }
 
@@ -104,8 +130,11 @@ export default function PayrollPage() {
       const result = await createPaymentRequests(signer)
       
       if (result.success) {
-        alert('Payroll triggered successfully!')
+        alert('Payroll triggered successfully! Payment requests created and x402 challenges initiated.')
         fetchPayrollData()
+        
+        // Manually trigger x402 agent to process payments
+        await x402Agent.manualTriggerPayroll()
       } else {
         throw new Error(result.error || 'Failed to trigger payroll')
       }
@@ -118,26 +147,28 @@ export default function PayrollPage() {
     }
   }
 
-  const toggleAutomation = () => {
-    // Call API to update automation settings
-    fetch('/api/agent', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: isRunning ? 'stop' : 'start'
+  const toggleAutomation = async () => {
+    try {
+      const response = await fetch('/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: isRunning ? 'stop' : 'start'
+        })
       })
-    })
-    .then(response => response.json())
-    .then(data => {
+      
+      const data = await response.json()
       if (data.success) {
         setIsRunning(!isRunning)
         setAutomationEnabled(!isRunning)
         alert(`Automation ${!isRunning ? 'started' : 'stopped'}`)
+      } else {
+        throw new Error(data.error || 'Failed to toggle automation')
       }
-    })
-    .catch(error => {
+    } catch (error: any) {
       console.error('Failed to toggle automation:', error)
-    })
+      alert(`Failed to toggle automation: ${error.message || 'Unknown error'}`)
+    }
   }
 
   const handleAddPayee = async () => {
@@ -180,8 +211,56 @@ export default function PayrollPage() {
   }
 
   const handleUpdateThreshold = async () => {
-    // Implementation for updating revenue threshold
-    alert('Update threshold feature coming soon!')
+    if (!revenueThreshold || parseFloat(revenueThreshold) <= 0) {
+      alert('Please enter a valid threshold amount')
+      return
+    }
+
+    if (!user) {
+      alert('Please connect your wallet')
+      return
+    }
+
+    setUpdatingThreshold(true)
+    setError('')
+
+    try {
+      const provider = await (window as any).ethereum
+      if (!provider) {
+        throw new Error('No wallet provider found')
+      }
+      
+      // Create ethers provider and signer
+      const ethers = await import('ethers')
+      const ethersProvider = new ethers.BrowserProvider(provider)
+      const signer = await ethersProvider.getSigner()
+      
+      // Update revenue threshold
+      const result = await updateRevenueThreshold(signer, revenueThreshold)
+      
+      if (result.success) {
+        alert('Revenue threshold updated successfully!')
+        fetchPayrollData()
+      } else {
+        throw new Error(result.error || 'Failed to update threshold')
+      }
+    } catch (error: any) {
+      console.error('Error updating threshold:', error)
+      setError(error.message || 'Failed to update threshold')
+      alert(`Failed to update threshold: ${error.message || 'Unknown error'}`)
+    } finally {
+      setUpdatingThreshold(false)
+    }
+  }
+
+  const explainRevenueThreshold = () => {
+    alert(`Revenue Threshold Explanation:\n\n` +
+          `The revenue threshold determines when automated payroll will trigger.\n\n` +
+          `• When treasury balance exceeds this amount, the x402 agent will automatically check for due payments\n` +
+          `• If there are due payments, the agent creates x402 payment challenges\n` +
+          `• This prevents frequent small transactions and batches payments\n` +
+          `• Recommended: Set to 2-3x your monthly payroll amount\n\n` +
+          `Example: If monthly payroll is $5,000, set threshold to $10,000-$15,000`)
   }
 
   if (!authenticated) {
@@ -221,7 +300,7 @@ export default function PayrollPage() {
                   <div>
                     <div className="text-sm text-gray-400">Your Balance</div>
                     <div className="font-semibold text-white">
-                      {userWalletBalance} USDC
+                      {userWalletBalance} USDC.e
                     </div>
                   </div>
                 </div>
@@ -234,7 +313,7 @@ export default function PayrollPage() {
                   <div>
                     <div className="text-sm text-gray-400">Treasury</div>
                     <div className="font-semibold text-white">
-                      {treasuryBalance} USDC
+                      {treasuryBalance} USDC.e
                     </div>
                   </div>
                 </div>
@@ -265,7 +344,7 @@ export default function PayrollPage() {
                 
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-2">
-                    Monthly Salary (USDC)
+                    Monthly Salary (USDC.e)
                   </label>
                   <input
                     type="number"
@@ -301,7 +380,10 @@ export default function PayrollPage() {
             <div className="flex-1">
               <h2 className="text-xl font-semibold text-white mb-2">Automated Payroll</h2>
               <p className="text-gray-400">
-                Set up automatic payroll processing based on revenue thresholds
+                Start Automation: Enables the x402 agent to monitor revenue and automatically trigger payroll when conditions are met
+              </p>
+              <p className="text-gray-400 mt-2">
+                Run Payroll Now: Manually creates payment requests and initiates x402 payments immediately
               </p>
               <div className="flex items-center gap-2 mt-2">
                 <div className={`w-2 h-2 rounded-full ${automationEnabled ? 'bg-green-400' : 'bg-gray-500'}`}></div>
@@ -322,7 +404,7 @@ export default function PayrollPage() {
                 {isRunning ? (
                   <>
                     <Pause className="h-5 w-5" />
-                    Pause Automation
+                    Stop Automation
                   </>
                 ) : (
                   <>
@@ -345,7 +427,7 @@ export default function PayrollPage() {
                 ) : (
                   <>
                     <DollarSign className="h-5 w-5" />
-                    Run Payroll Now
+                    Run Payroll Now (x402)
                   </>
                 )}
               </button>
@@ -392,6 +474,7 @@ export default function PayrollPage() {
                     <th className="text-left p-3 text-gray-300 font-medium">Monthly Salary</th>
                     <th className="text-left p-3 text-gray-300 font-medium">Last Payment</th>
                     <th className="text-left p-3 text-gray-300 font-medium">Accrued</th>
+                    <th className="text-left p-3 text-gray-300 font-medium">Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-800">
@@ -401,10 +484,19 @@ export default function PayrollPage() {
                         <div className="font-mono text-sm text-white">
                           {payee.address.substring(0, 8)}...{payee.address.substring(payee.address.length - 6)}
                         </div>
+                        <a
+                          href={`https://explorer.cronos.org/testnet/address/${payee.address}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center text-xs text-gray-400 hover:text-primary-400 mt-1"
+                        >
+                          <ExternalLink className="mr-1 h-3 w-3" />
+                          View
+                        </a>
                       </td>
                       <td className="p-3">
                         <div className="font-semibold text-white">
-                          ${(Number(payee.salary) / 1_000_000).toFixed(2)} USDC
+                          ${(Number(payee.salary) / 1_000_000).toFixed(2)} USDC.e
                         </div>
                       </td>
                       <td className="p-3">
@@ -414,8 +506,19 @@ export default function PayrollPage() {
                       </td>
                       <td className="p-3">
                         <div className="text-gray-300">
-                          ${(Number(payee.accrued) / 1_000_000).toFixed(2)} USDC
+                          ${(Number(payee.accrued) / 1_000_000).toFixed(2)} USDC.e
                         </div>
+                      </td>
+                      <td className="p-3">
+                        {payee.lastPayment.getFullYear() === 1970 ? (
+                          <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-blue-900/30 text-blue-400 border border-blue-800">
+                            New
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-900/30 text-green-400 border border-green-800">
+                            Active
+                          </span>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -427,28 +530,66 @@ export default function PayrollPage() {
 
         {/* Revenue Threshold Settings */}
         <div className="glass rounded-2xl p-6">
-          <h2 className="text-xl font-semibold text-white mb-4">Revenue Threshold Settings</h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-semibold text-white">Revenue Threshold Settings</h2>
+            <button
+              onClick={explainRevenueThreshold}
+              className="p-2 text-gray-400 hover:text-white"
+            >
+              <Info className="h-5 w-5" />
+            </button>
+          </div>
+          
           <div className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-2">
-                Minimum Revenue to Trigger Payroll (USDC)
+                Minimum Revenue to Trigger Payroll (USDC.e)
               </label>
               <div className="flex gap-3">
                 <input
                   type="number"
+                  value={revenueThreshold}
+                  onChange={(e) => setRevenueThreshold(e.target.value)}
                   placeholder="10000"
                   className="flex-1 px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white"
                 />
                 <button
                   onClick={handleUpdateThreshold}
-                  className="px-6 py-2 rounded-lg bg-primary-500 text-white hover:bg-primary-600"
+                  disabled={updatingThreshold}
+                  className="px-6 py-2 rounded-lg bg-primary-500 text-white hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                 >
-                  Update
+                  {updatingThreshold ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 animate-spin" />
+                      Updating...
+                    </>
+                  ) : (
+                    'Update'
+                  )}
                 </button>
               </div>
               <p className="text-sm text-gray-400 mt-2">
                 Payroll will automatically trigger when treasury balance exceeds this amount
               </p>
+              
+              {error && (
+                <div className="mt-2 p-2 bg-error/10 border border-error/30 rounded-lg">
+                  <div className="flex items-center">
+                    <AlertCircle className="h-4 w-4 text-error mr-2" />
+                    <div className="text-error text-sm">{error}</div>
+                  </div>
+                </div>
+              )}
+            </div>
+            
+            <div className="p-4 bg-blue-900/20 border border-blue-800/30 rounded-lg">
+              <h4 className="font-semibold text-blue-300 mb-2">How it works:</h4>
+              <ul className="text-sm text-gray-300 space-y-1">
+                <li>• When treasury balance ≥ threshold, x402 agent checks for due payments</li>
+                <li>• Creates x402 payment challenges for each due payee</li>
+                <li>• Prevents frequent small transactions (saves gas)</li>
+                <li>• Recommended: Set to 2-3x monthly payroll amount</li>
+              </ul>
             </div>
           </div>
         </div>

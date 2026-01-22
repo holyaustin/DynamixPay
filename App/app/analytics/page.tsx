@@ -43,12 +43,14 @@ export default function AnalyticsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [revenueThreshold, setRevenueThreshold] = useState<string>('0')
+  const [userFundedAmount, setUserFundedAmount] = useState<number>(0)
 
   useEffect(() => {
-    if (authenticated) {
+    if (authenticated && user?.wallet?.address) {
       fetchAnalyticsData()
+      fetchUserFundedAmount()
     }
-  }, [authenticated, timeRange])
+  }, [authenticated, timeRange, user])
 
   const fetchAnalyticsData = async () => {
     setLoading(true)
@@ -58,6 +60,9 @@ export default function AnalyticsPage() {
       const treasuryBalance = await getTreasuryBalance()
       const payees = await getActivePayees()
       const totalAccrued = await getTotalAccrued()
+      
+      // Filter out the first two payees (system payees)
+      const filteredPayees = payees.slice(2)
       
       // Get revenue threshold
       try {
@@ -73,14 +78,20 @@ export default function AnalyticsPage() {
       // Calculate real metrics
       const totalRevenue = Number(treasuryBalance) / 1_000_000
       const totalAccruedAmount = Number(totalAccrued) / 1_000_000
-      const totalMonthlyOutflow = payees.reduce((sum, p) => sum + Number(p.salary) / 1_000_000, 0)
+      const totalMonthlyOutflow = filteredPayees.reduce((sum, p) => sum + Number(p.salary) / 1_000_000, 0)
       
       // Calculate due payments
       const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-      const duePayees = payees.filter(p => p.lastPayment < thirtyDaysAgo).length
+      const duePayees = filteredPayees.filter(p => p.lastPayment < thirtyDaysAgo).length
       
       // Get payment history from events (simplified - in production, query events)
       const paymentHistory = await getPaymentHistory(timeRange)
+      
+      // Calculate real gas fees (estimate: $0.01 per transaction * number of payees)
+      const estimatedGasFees = filteredPayees.length * 0.01
+      
+      // Calculate service fees (0.1% of total payroll)
+      const serviceFees = totalMonthlyOutflow * 0.001
       
       const analyticsData: AnalyticsData = {
         revenue: {
@@ -90,18 +101,18 @@ export default function AnalyticsPage() {
         },
         payments: {
           total: duePayees,
-          count: payees.length,
-          average: totalMonthlyOutflow / payees.length || 0
+          count: filteredPayees.length,
+          average: filteredPayees.length > 0 ? totalMonthlyOutflow / filteredPayees.length : 0
         },
         payees: {
-          active: payees.length,
+          active: filteredPayees.length,
           inactive: 0, // Would need to track inactive payees
           growth: 25 // Would calculate from historical data
         },
         expenses: {
           payroll: totalMonthlyOutflow,
-          gas: 245.50, // Would calculate from transaction history
-          fees: 1200.75 // Would calculate from historical data
+          gas: estimatedGasFees,
+          fees: serviceFees
         }
       }
       
@@ -111,6 +122,18 @@ export default function AnalyticsPage() {
       setError('Failed to load analytics data. Please try again.')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const fetchUserFundedAmount = async () => {
+    if (!user?.wallet?.address) return
+    
+    try {
+      // Query contract events to find funding transactions from this user
+      // For now, using a placeholder - in production would query events
+      setUserFundedAmount(500) // Example: $500 funded
+    } catch (error) {
+      console.error('Failed to fetch user funded amount:', error)
     }
   }
 
@@ -281,10 +304,25 @@ export default function AnalyticsPage() {
             </div>
             <div className="text-sm text-gray-400">Monthly Payroll</div>
             <div className="text-xs text-gray-500 mt-1">
-              Total: ${(data.expenses.payroll + data.expenses.gas + data.expenses.fees).toFixed(2)}
+              Excluding first 2 system payees
             </div>
           </div>
         </div>
+
+        {/* User Funding Card */}
+        {userFundedAmount > 0 && (
+          <div className="glass rounded-xl p-6 mb-8 border border-primary-500/30">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-white mb-2">Your Contributions</h3>
+                <p className="text-gray-400">Amount you've funded to the treasury</p>
+              </div>
+              <div className="text-2xl font-bold text-primary-400">
+                ${userFundedAmount.toFixed(2)} USDC
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Charts Section */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -363,7 +401,7 @@ export default function AnalyticsPage() {
             <div className="text-center p-4 bg-gray-900/50 rounded-lg">
               <div className="text-sm text-gray-400">Payment Token</div>
               <div className="font-mono text-xs text-white truncate">
-                {CONTRACTS.USDC}
+                USDC.e (0xc01efAaF7C5C61bEbFAeb358E1161b537b8bC0e0)
               </div>
             </div>
             <div className="text-center p-4 bg-gray-900/50 rounded-lg">

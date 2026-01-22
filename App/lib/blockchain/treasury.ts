@@ -137,9 +137,23 @@ export async function addPayee(
     }
   } catch (error: any) {
     console.error('Failed to add payee:', error)
+    
+    // Provide more specific error messages
+    let errorMessage = error.message || 'Unknown error'
+    
+    if (errorMessage.includes('PayeeAlreadyExists')) {
+      errorMessage = 'Payee already exists in the system'
+    } else if (errorMessage.includes('InvalidAddress')) {
+      errorMessage = 'Invalid Ethereum address'
+    } else if (errorMessage.includes('ZeroAmount')) {
+      errorMessage = 'Salary must be greater than 0'
+    } else if (errorMessage.includes('revert')) {
+      errorMessage = 'Contract rejected transaction. Payee may already exist.'
+    }
+    
     return { 
       success: false, 
-      error: error.message || 'Unknown error' 
+      error: errorMessage
     }
   }
 }
@@ -148,6 +162,63 @@ export async function createPaymentRequests(
   signer: ethers.Signer
 ): Promise<{ success: boolean; requestIds?: bigint[]; transactionHash?: string; error?: string }> {
   try {
+    // First, check if there are any due payments
+    const payees = await getActivePayees()
+    
+    // Filter out the first two system payees
+    const filteredPayees = payees.slice(2)
+    
+    if (filteredPayees.length === 0) {
+      return { 
+        success: false, 
+        error: 'No active payees found. Add payees first.' 
+      }
+    }
+    
+    // Check for due payments
+    const now = Math.floor(Date.now() / 1000)
+    const thirtyDays = 30 * 24 * 60 * 60
+    const duePayees = filteredPayees.filter(payee => {
+      const lastPayment = Math.floor(payee.lastPayment.getTime() / 1000)
+      // If never paid (lastPayment is 0) or it's been more than 30 days
+      return lastPayment === 0 || (now - lastPayment >= thirtyDays)
+    })
+    
+    if (duePayees.length === 0) {
+      return { 
+        success: false, 
+        error: 'No payments are currently due. Payments are made every 30 days.' 
+      }
+    }
+    
+    // Calculate total due amount
+    const totalDue = duePayees.reduce((sum, payee) => sum + payee.salary, BigInt(0))
+    
+    // Check treasury balance
+    const treasuryBalance = await getTreasuryBalance()
+    
+    if (treasuryBalance < totalDue) {
+      const needed = formatUSDC(totalDue)
+      const available = formatUSDC(treasuryBalance)
+      return { 
+        success: false, 
+        error: `Insufficient treasury balance. Need $${needed} USDC.e, have $${available} USDC.e. Please fund the treasury first.` 
+      }
+    }
+    
+    // Check if revenue threshold is met
+    const revenueThreshold = await getRevenueThreshold()
+    
+    if (treasuryBalance < revenueThreshold) {
+      const needed = formatUSDC(revenueThreshold)
+      const available = formatUSDC(treasuryBalance)
+      return { 
+        success: false, 
+        error: `Revenue threshold not met. Need $${needed} USDC.e, have $${available} USDC.e. The threshold can be adjusted in settings.` 
+      }
+    }
+    
+    // All conditions met, proceed with creating payment requests
     const treasuryContract = getTreasuryContract(signer)
     const tx = await treasuryContract.createPaymentRequests()
     const receipt = await tx.wait()
@@ -156,6 +227,7 @@ export async function createPaymentRequests(
       return { success: false, error: 'Transaction receipt not found' }
     }
     
+    // Parse logs to get event data
     const contractInterface = treasuryContract.interface
     const contractAddress = await treasuryContract.getAddress()
     
@@ -184,6 +256,15 @@ export async function createPaymentRequests(
       event.args.requestId ? BigInt(event.args.requestId.toString()) : BigInt(0)
     )
     
+    // Also check for PayrollTriggered event
+    const payrollTriggeredEvents = parsedLogs.filter(
+      (log: any) => log?.name === 'PayrollTriggered'
+    )
+    
+    if (payrollTriggeredEvents.length > 0) {
+      console.log('Payroll triggered successfully:', payrollTriggeredEvents[0].args)
+    }
+    
     return { 
       success: true, 
       requestIds: requestIds.length > 0 ? requestIds : undefined,
@@ -191,7 +272,40 @@ export async function createPaymentRequests(
     }
   } catch (error: any) {
     console.error('Failed to create payment requests:', error)
-    return { success: false, error: error.message }
+    
+    // Provide more specific error messages
+    let errorMessage = error.message || 'Unknown error'
+    
+    if (errorMessage.includes('InsufficientBalance')) {
+      errorMessage = 'Insufficient funds in treasury'
+    } else if (errorMessage.includes('NotTimeForPayment')) {
+      errorMessage = 'Not enough time has passed since last payment (30-day interval)'
+    } else if (errorMessage.includes('revert')) {
+      // Try to extract revert reason
+      try {
+        if (error.data && error.data !== '0x') {
+          // Check for common error selectors
+          const errorData = error.data
+          
+          if (errorData.startsWith('0x08c379a0')) { // Error(string)
+            const reason = ethers.AbiCoder.defaultAbiCoder().decode(['string'], '0x' + errorData.slice(10))
+            errorMessage = `Contract error: ${reason[0]}`
+          } else if (errorData.startsWith('0x1e6f2836')) { // InsufficientBalance()
+            errorMessage = 'Insufficient balance in treasury'
+          } else if (errorData.startsWith('0x0f4cf0a6')) { // NotTimeForPayment()
+            errorMessage = 'Not enough time has passed since last payment'
+          }
+        }
+      } catch (decodeError) {
+        console.error('Failed to decode error:', decodeError)
+      }
+    } else if (errorMessage.includes('user rejected')) {
+      errorMessage = 'Transaction was rejected by your wallet'
+    } else if (errorMessage.includes('insufficient funds')) {
+      errorMessage = 'Insufficient funds for gas fee'
+    }
+    
+    return { success: false, error: errorMessage }
   }
 }
 
@@ -389,181 +503,97 @@ export async function getRecentEvents(
   }
 }
 
+// ==================== ADDITIONAL HELPER FUNCTIONS ====================
 
-/*
-// lib/blockchain/treasury.ts
-import { publicClient } from './provider'
-import { CONTRACTS } from '@/config/contracts'
-
-// Properly typed ABIs
-const USDC_ABI = [
-  {
-    name: 'balanceOf',
-    type: 'function',
-    stateMutability: 'view',
-    inputs: [{ name: 'account', type: 'address' }],
-    outputs: [{ name: '', type: 'uint256' }],
-  },
-] as const
-
-const TREASURY_ABI = [
-  {
-    name: 'getActivePayees',
-    type: 'function',
-    stateMutability: 'view',
-    inputs: [],
-    outputs: [
-      { name: '', type: 'address[]' },
-      { name: '', type: 'uint256[]' },
-      { name: '', type: 'uint256[]' },
-      { name: '', type: 'uint256[]' },
-    ],
-  },
-  {
-    name: 'getTotalAccrued',
-    type: 'function',
-    stateMutability: 'view',
-    inputs: [],
-    outputs: [{ name: '', type: 'uint256' }],
-  },
-  {
-    name: 'revenueThreshold',
-    type: 'function',
-    stateMutability: 'view',
-    inputs: [],
-    outputs: [{ name: '', type: 'uint256' }],
-  },
-  {
-    name: 'shouldTriggerPayroll',
-    type: 'function',
-    stateMutability: 'view',
-    inputs: [{ name: 'currentRevenue', type: 'uint256' }],
-    outputs: [{ name: '', type: 'bool' }],
-  },
-] as const
-
-export interface Payee {
-  address: string
-  salary: bigint
-  lastPayment: Date
-  accrued: bigint
-  active: boolean
-}
-
-export async function getTreasuryBalance(): Promise<bigint> {
+export async function checkPayrollConditions(): Promise<{
+  canTrigger: boolean
+  reason?: string
+  duePayees: number
+  totalDue: string
+  treasuryBalance: string
+  revenueThreshold: string
+}> {
   try {
-    console.log('Fetching treasury balance from:', CONTRACTS.USDC)
-    console.log('Treasury manager address:', CONTRACTS.TREASURY_MANAGER)
+    const payees = await getActivePayees()
+    const filteredPayees = payees.slice(2) // Exclude system payees
     
-    const balance = await publicClient.readContract({
-      address: CONTRACTS.USDC as `0x${string}`,
-      abi: USDC_ABI,
-      functionName: 'balanceOf',
-      args: [CONTRACTS.TREASURY_MANAGER as `0x${string}`],
-    })
-    
-    console.log('Balance result:', balance)
-    
-    // Return directly - Viem already returns the correct type
-    return balance as bigint
-  } catch (error) {
-    console.error('Failed to get treasury balance:', error)
-    // Return 0 instead of throwing to prevent breaking the UI
-    return BigInt(0)
-  }
-}
-
-export async function getActivePayees(): Promise<Payee[]> {
-  try {
-    console.log('Fetching active payees from:', CONTRACTS.TREASURY_MANAGER)
-    
-    const result = await publicClient.readContract({
-      address: CONTRACTS.TREASURY_MANAGER as `0x${string}`,
-      abi: TREASURY_ABI,
-      functionName: 'getActivePayees',
-    }) as readonly [`0x${string}`[], readonly bigint[], readonly bigint[], readonly bigint[]]
-    
-    console.log('Payees result:', result)
-    
-    if (!result || result.length !== 4) {
-      console.warn('Unexpected payees result format:', result)
-      return []
+    if (filteredPayees.length === 0) {
+      return {
+        canTrigger: false,
+        reason: 'No active payees found',
+        duePayees: 0,
+        totalDue: '0.00',
+        treasuryBalance: '0.00',
+        revenueThreshold: '0.00'
+      }
     }
     
-    const [addresses, salaries, lastPayments, accrued] = result
-    
-    return addresses.map((address, index) => ({
-      address,
-      salary: salaries[index] || BigInt(0),
-      lastPayment: new Date(Number(lastPayments[index] || BigInt(0)) * 1000),
-      accrued: accrued[index] || BigInt(0),
-      active: true
-    }))
-  } catch (error) {
-    console.error('Failed to get active payees:', error)
-    // Return empty array instead of throwing
-    return []
-  }
-}
-
-export async function getRevenueThreshold(): Promise<bigint> {
-  try {
-    const threshold = await publicClient.readContract({
-      address: CONTRACTS.TREASURY_MANAGER as `0x${string}`,
-      abi: TREASURY_ABI,
-      functionName: 'revenueThreshold',
+    // Check for due payments
+    const now = Math.floor(Date.now() / 1000)
+    const thirtyDays = 30 * 24 * 60 * 60
+    const duePayees = filteredPayees.filter(payee => {
+      const lastPayment = Math.floor(payee.lastPayment.getTime() / 1000)
+      return lastPayment === 0 || (now - lastPayment >= thirtyDays)
     })
     
-    return threshold as bigint
+    if (duePayees.length === 0) {
+      return {
+        canTrigger: false,
+        reason: 'No payments are currently due',
+        duePayees: 0,
+        totalDue: '0.00',
+        treasuryBalance: '0.00',
+        revenueThreshold: '0.00'
+      }
+    }
+    
+    // Calculate total due
+    const totalDue = duePayees.reduce((sum, payee) => sum + payee.salary, BigInt(0))
+    
+    // Check treasury balance
+    const treasuryBalance = await getTreasuryBalance()
+    
+    if (treasuryBalance < totalDue) {
+      return {
+        canTrigger: false,
+        reason: `Insufficient treasury balance. Need $${formatUSDC(totalDue)} USDC.e`,
+        duePayees: duePayees.length,
+        totalDue: formatUSDC(totalDue),
+        treasuryBalance: formatUSDC(treasuryBalance),
+        revenueThreshold: formatUSDC(await getRevenueThreshold())
+      }
+    }
+    
+    // Check revenue threshold
+    const revenueThreshold = await getRevenueThreshold()
+    
+    if (treasuryBalance < revenueThreshold) {
+      return {
+        canTrigger: false,
+        reason: `Revenue threshold not met. Need $${formatUSDC(revenueThreshold)} USDC.e`,
+        duePayees: duePayees.length,
+        totalDue: formatUSDC(totalDue),
+        treasuryBalance: formatUSDC(treasuryBalance),
+        revenueThreshold: formatUSDC(revenueThreshold)
+      }
+    }
+    
+    return {
+      canTrigger: true,
+      duePayees: duePayees.length,
+      totalDue: formatUSDC(totalDue),
+      treasuryBalance: formatUSDC(treasuryBalance),
+      revenueThreshold: formatUSDC(revenueThreshold)
+    }
   } catch (error) {
-    console.error('Failed to get revenue threshold:', error)
-    return BigInt(0)
+    console.error('Failed to check payroll conditions:', error)
+    return {
+      canTrigger: false,
+      reason: 'Error checking conditions',
+      duePayees: 0,
+      totalDue: '0.00',
+      treasuryBalance: '0.00',
+      revenueThreshold: '0.00'
+    }
   }
 }
-
-export async function getTotalAccrued(): Promise<bigint> {
-  try {
-    console.log('Fetching total accrued from:', CONTRACTS.TREASURY_MANAGER)
-    
-    const accrued = await publicClient.readContract({
-      address: CONTRACTS.TREASURY_MANAGER as `0x${string}`,
-      abi: TREASURY_ABI,
-      functionName: 'getTotalAccrued',
-    })
-    
-    console.log('Total accrued result:', accrued)
-    
-    return accrued as bigint
-  } catch (error) {
-    console.error('Failed to get total accrued:', error)
-    return BigInt(0)
-  }
-}
-
-export async function shouldTriggerPayroll(currentRevenue: bigint): Promise<boolean> {
-  try {
-    const shouldTrigger = await publicClient.readContract({
-      address: CONTRACTS.TREASURY_MANAGER as `0x${string}`,
-      abi: TREASURY_ABI,
-      functionName: 'shouldTriggerPayroll',
-      args: [currentRevenue],
-    })
-    
-    return shouldTrigger as boolean
-  } catch (error) {
-    console.error('Failed to check payroll trigger:', error)
-    return false
-  }
-}
-
-// Helper function to format USDC amount (6 decimals)
-export function formatUSDC(amount: bigint): string {
-  return (Number(amount) / 1_000_000).toFixed(2)
-}
-
-// Helper to check if payment is due
-export function isPaymentDue(lastPayment: Date): boolean {
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-  return lastPayment < thirtyDaysAgo
-}
-  */

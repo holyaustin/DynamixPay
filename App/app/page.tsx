@@ -1,9 +1,19 @@
 // app/page.tsx
+'use client'
 import Link from 'next/link'
 import { Container } from '@/components/layout/Container'
 import { ArrowRight, Shield, Zap, BarChart, Lock, Cpu, CheckCircle } from 'lucide-react'
+import { usePrivy } from '@privy-io/react-auth'
 
 export default function HomePage() {
+  const { authenticated, login } = usePrivy()
+  //const router = useRouter()
+  const handleClick = () => {
+    if (!authenticated) {
+      login()
+    }
+  }
+
   const features = [
     {
       icon: <Zap className="h-6 w-6 text-primary-400" />,
@@ -31,11 +41,18 @@ export default function HomePage() {
     },
     {
       icon: <Lock className="h-6 w-6 text-purple-400" />,
-      title: "Multi-Sig Support",
-      description: "Enterprise-grade security with multi-signature transaction approvals.",
+      title: "Multi-transaction Support",
+      description: "Enterprise-grade security with multi-transaction approvals.",
       gradient: "from-purple-500/20 to-purple-600/20"
+    },
+    {
+      icon: <CheckCircle className="h-6 w-6 text-teal-400" />,
+      title: "Real-time Monitoring",
+      description: "Live tracking of payments, contract events, and treasury health with instant notifications.",
+      gradient: "from-teal-500/20 to-teal-600/20"
     }
   ]
+
 
   return (
     <div className="relative overflow-hidden">
@@ -49,7 +66,7 @@ export default function HomePage() {
 
       <Container>
         {/* Hero Section */}
-        <div className="relative py-20 md:py-32 text-center">
+        <div className="relative py-20 md:py-12 text-center">
           <div className="max-w-6xl mx-auto">
             {/* Badge */}
             <div className="inline-flex items-center px-4 py-2 rounded-full bg-primary-500/10 border border-primary-500/30 mb-8 backdrop-blur-sm animate-fade-in">
@@ -77,16 +94,17 @@ export default function HomePage() {
             
             {/* CTA Buttons */}
             <div className="flex flex-col sm:flex-row gap-4 justify-center animate-fade-in animation-delay-600">
-              <Link
-                href="/dashboard"
-                className="inline-flex items-center justify-center px-8 py-4 rounded-xl bg-gradient-to-r from-primary-500 to-primary-600 text-white font-semibold hover:from-primary-600 hover:to-primary-700 transition-all shadow-lg hover:shadow-primary-500/25 hover:scale-105 duration-300"
-              >
-                Launch Dashboard
-                <ArrowRight className="ml-2 h-5 w-5" />
-              </Link>
-              
+            
+            <button
+              onClick={handleClick}
+              className="inline-flex items-center justify-center px-8 py-4 rounded-xl bg-gradient-to-r from-primary-500 to-primary-600 text-white font-semibold hover:from-primary-600 hover:to-primary-700 transition-all shadow-lg hover:shadow-primary-500/25 hover:scale-105 duration-300"
+            >
+              {authenticated ? 'Go to Dashboard' : 'Launch App'}
+              <ArrowRight className="ml-2 h-5 w-5" />
+            </button>
+            
               <a
-                href="https://cronos.org/explorer/testnet3/address/0x084622e6970BBcBA510454C6145313c2993ED9E4"
+                  href="https://explorer.cronos.org/testnet/address/0x084622e6970BBcBA510454C6145313c2993ED9E4"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center justify-center px-8 py-4 rounded-xl bg-black/40 border border-gray-700 text-gray-300 font-semibold hover:bg-gray-800 hover:text-white hover:border-primary-500/30 transition-all duration-300"

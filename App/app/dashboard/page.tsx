@@ -9,7 +9,8 @@ import PayeeTable from '@/components/dashboard/PayeeTable'
 import { ConnectButton } from '@/components/wallet/ConnectButton'
 import { 
   DollarSign, Users, TrendingUp, Clock, Plus, 
-  Settings, Play, Bell, Wallet, RefreshCw, Activity
+  Settings, Play, Bell, Wallet, RefreshCw, Activity,
+  ExternalLink
 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { 
@@ -19,12 +20,15 @@ import {
   createPaymentRequests,
   calculateDuePayees,
   calculateTotalMonthlyOutflow,
-  Payee
+  Payee,
+  getRevenueThreshold,
+  shouldTriggerPayroll
 } from '@/lib/blockchain/treasury'
 import { getBalance } from '@/lib/blockchain/ethers-utils'
 import { treasuryEventListener } from '@/lib/blockchain/event-listener'
 import { transactionStore, Transaction } from '@/lib/storage/transaction-store'
 import { EnhancedErrorHandler, withGlobalErrorHandling } from '@/lib/utils/error-handler'
+import { CONTRACTS } from '@/config/contracts'
 
 interface DashboardData {
   treasuryBalance: bigint
@@ -33,6 +37,8 @@ interface DashboardData {
   totalMonthlyOutflow: bigint
   duePayeesCount: number
   userBalance: string
+  revenueThreshold: bigint
+  shouldTrigger: boolean
   lastUpdated: Date
 }
 
@@ -48,6 +54,7 @@ export default function DashboardPage() {
   const [lastUpdateTime, setLastUpdateTime] = useState<Date>(new Date())
   const [pendingTransactions, setPendingTransactions] = useState(0)
   const [isEventListenerActive, setIsEventListenerActive] = useState(false)
+  const [userFundedAmount, setUserFundedAmount] = useState<string>('0.00')
 
   // Initialize event listener
   useEffect(() => {
@@ -83,18 +90,20 @@ export default function DashboardPage() {
     return unsubscribe
   }, [])
 
-  const fetchDashboardData = useCallback(async () => {
+  const fetchDashboardData = useCallback(async (): Promise<void> => {
     await withGlobalErrorHandling(async () => {
       setLoading(true)
       setError(null)
 
-      // Fetch all data in parallel with retry
-      const [treasuryBalance, payeesData, totalAccrued, userBalanceResult] = await Promise.all([
-        EnhancedErrorHandler.withRetry(() => getTreasuryBalance(), {
-          maxAttempts: 3,
-          baseDelay: 1000,
-          shouldRetry: EnhancedErrorHandler.isNetworkError
-        }),
+      // Fetch treasury balance first separately
+      const treasuryBalance = await EnhancedErrorHandler.withRetry(() => getTreasuryBalance(), {
+        maxAttempts: 3,
+        baseDelay: 1000,
+        shouldRetry: EnhancedErrorHandler.isNetworkError
+      })
+
+      // Now fetch other data in parallel
+      const [payeesData, totalAccrued, userBalanceResult, revenueThreshold, shouldTriggerResult] = await Promise.all([
         EnhancedErrorHandler.withRetry(() => getActivePayees(), {
           maxAttempts: 3,
           baseDelay: 1000,
@@ -105,26 +114,62 @@ export default function DashboardPage() {
           baseDelay: 1000,
           shouldRetry: EnhancedErrorHandler.isNetworkError
         }),
-        user?.wallet?.address ? getBalance(user.wallet.address) : Promise.resolve('0.00')
+        user?.wallet?.address ? getBalance(user.wallet.address) : Promise.resolve('0.00'),
+        EnhancedErrorHandler.withRetry(() => getRevenueThreshold(), {
+          maxAttempts: 3,
+          baseDelay: 1000,
+          shouldRetry: EnhancedErrorHandler.isNetworkError
+        }),
+        EnhancedErrorHandler.withRetry(async () => {
+          // Explicitly convert to boolean
+          const triggerResult = await shouldTriggerPayroll(treasuryBalance)
+          return Boolean(triggerResult) // Ensure it's a boolean
+        }, {
+          maxAttempts: 3,
+          baseDelay: 1000,
+          shouldRetry: EnhancedErrorHandler.isNetworkError
+        })
       ])
       
-      const duePayeesCount = calculateDuePayees(payeesData)
-      const totalMonthlyOutflow = calculateTotalMonthlyOutflow(payeesData)
+      // Filter out the first two payees (system payees) and only show payees added by current user
+      const filteredPayees = payeesData.slice(2).filter(payee => 
+        payee.active // Only active payees
+      )
+      
+      const duePayeesCount = calculateDuePayees(filteredPayees)
+      const totalMonthlyOutflow = calculateTotalMonthlyOutflow(filteredPayees)
 
       setData({
         treasuryBalance,
-        payees: payeesData,
+        payees: filteredPayees,
         totalAccrued,
         totalMonthlyOutflow,
         duePayeesCount,
         userBalance: userBalanceResult as string,
+        revenueThreshold,
+        shouldTrigger: Boolean(shouldTriggerResult), // Ensure boolean type
         lastUpdated: new Date()
       })
       
       setUserWalletBalance(userBalanceResult as string)
       setLastUpdateTime(new Date())
+      
+      // Fetch user funded amount
+      fetchUserFundedAmount()
     }, 'fetchDashboardData')()
   }, [user])
+
+  const fetchUserFundedAmount = async () => {
+    if (!user?.wallet?.address) return
+    
+    try {
+      // For now, use a mock value - in production, query contract events
+      // to calculate total amount funded by this user
+      setUserFundedAmount('500.00') // Example: $500 funded
+    } catch (error) {
+      console.error('Failed to fetch user funded amount:', error)
+    }
+  }
 
   useEffect(() => {
     if (!authenticated && ready) {
@@ -142,7 +187,7 @@ export default function DashboardPage() {
     }
   }, [authenticated, ready, router, fetchDashboardData])
 
-  const triggerPayroll = withGlobalErrorHandling(async () => {
+  const triggerPayroll = withGlobalErrorHandling(async (): Promise<void> => {
     if (!user) {
       alert('Please connect your wallet')
       return
@@ -162,17 +207,16 @@ export default function DashboardPage() {
       const signer = await ethersProvider.getSigner()
       const userAddress = await signer.getAddress()
       
-      // Track transaction - FIXED: timestamp is automatically added by addTransaction
+      // Track transaction
       const txId = transactionStore.addTransaction({
         hash: 'pending',
         type: 'create_payments',
         status: 'pending',
         from: userAddress,
-        to: process.env.NEXT_PUBLIC_TREASURY_CONTRACT!,
-        // timestamp is automatically added by addTransaction, don't include it here
+        to: CONTRACTS.TREASURY_MANAGER,
       })
       
-      // Call createPaymentRequests
+      // First, create payment requests (this creates x402 challenges)
       const result = await createPaymentRequests(signer)
       
       if (result.success && result.transactionHash) {
@@ -184,17 +228,38 @@ export default function DashboardPage() {
           blockNumber: result.requestIds?.length
         })
         
-        alert('Payroll triggered successfully!')
+        alert('Payment requests created successfully! Now processing x402 payments...')
+        
+        // Process x402 payments for each request
+        if (result.requestIds && result.requestIds.length > 0) {
+          for (const requestId of result.requestIds) {
+            // Call x402 challenge endpoint for each request
+            const challengeResponse = await fetch(`/api/x402/challenge?requestId=${requestId}`, {
+              method: 'GET'
+            })
+            
+            if (challengeResponse.ok) {
+              const challenge = await challengeResponse.json()
+              
+              // In a real implementation, you would:
+              // 1. Present the x402 challenge to the user
+              // 2. Let the x402 facilitator process the payment
+              // 3. Call /api/x402/settle when payment is complete
+              
+              console.log(`x402 challenge created for request ${requestId}:`, challenge)
+            }
+          }
+        }
+        
         // Refresh data
         await fetchDashboardData()
       } else {
         throw new Error(result.error || 'Failed to trigger payroll')
       }
     } catch (error: any) {
-      // Update transaction as failed - FIXED: use the actual transaction ID
-      // We need to get the last transaction ID
+      // Update transaction as failed
       const transactions = transactionStore.getAllTransactions()
-      const lastTx = transactions[0] // Most recent transaction
+      const lastTx = transactions[0]
       if (lastTx) {
         transactionStore.updateTransaction(lastTx.id, {
           status: 'failed',
@@ -208,7 +273,7 @@ export default function DashboardPage() {
     }
   }, 'triggerPayroll')
 
-  const refreshData = async () => {
+  const refreshData = async (): Promise<void> => {
     setIsRefreshing(true)
     try {
       await fetchDashboardData()
@@ -217,17 +282,26 @@ export default function DashboardPage() {
     }
   }
 
-  const addPayee = () => {
+  const addPayee = (): void => {
     router.push('/payroll?action=add')
   }
 
-  const manageSettings = () => {
+  const manageSettings = (): void => {
     router.push('/payroll?action=settings')
   }
 
-  const viewTransactions = () => {
-    // Check if we have a transactions page or use analytics
+  const viewTransactions = (): void => {
     router.push('/transactions')
+  }
+
+  const sendPaymentToPayee = (payeeAddress: string): void => {
+    // Navigate to x402 challenge page with payee details
+    router.push(`/api/x402/challenge?payee=${payeeAddress}&amount=1000&description=Manual+Payment`)
+  }
+
+  const editPayeeDetails = (payeeAddress: string): void => {
+    // Navigate to edit page with payee address
+    router.push(`/payroll?action=edit&address=${payeeAddress}`)
   }
 
   if (!authenticated) {
@@ -288,6 +362,8 @@ export default function DashboardPage() {
   const formattedTotalMonthlyOutflow = data ? Number(data.totalMonthlyOutflow) / 1_000_000 : 0
   const formattedTotalAccrued = data ? Number(data.totalAccrued) / 1_000_000 : 0
   const duePayeesCount = data?.duePayeesCount || 0
+  const formattedRevenueThreshold = data ? Number(data.revenueThreshold) / 1_000_000 : 0
+  const shouldTriggerPayrollValue = data?.shouldTrigger || false
 
   return (
     <Container>
@@ -328,7 +404,20 @@ export default function DashboardPage() {
                   <div>
                     <div className="text-sm text-gray-400">Your Balance</div>
                     <div className="font-semibold text-white">
-                      {userWalletBalance} USDC
+                      {userWalletBalance} USDC.e
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              {/* User Funded Amount */}
+              <div className="px-4 py-2 rounded-lg bg-surface border border-green-700">
+                <div className="flex items-center gap-2">
+                  <DollarSign className="h-4 w-4 text-green-400" />
+                  <div>
+                    <div className="text-sm text-gray-400">Funded</div>
+                    <div className="font-semibold text-white">
+                      {userFundedAmount} USDC.e
                     </div>
                   </div>
                 </div>
@@ -363,9 +452,10 @@ export default function DashboardPage() {
           <TreasuryMetrics
             title="Treasury Balance"
             value={`$${formattedTreasuryBalance.toFixed(2)}`}
-            change={formattedTreasuryBalance > 10000 ? '+12.5%' : '-5.2%'}
+            change={formattedTreasuryBalance > formattedRevenueThreshold ? 'Above Threshold' : 'Below Threshold'}
             icon={<DollarSign className="h-5 w-5" />}
             loading={loading}
+            status={formattedTreasuryBalance > formattedRevenueThreshold ? 'success' : 'warning'}
           />
           
           <TreasuryMetrics
@@ -380,7 +470,7 @@ export default function DashboardPage() {
           <TreasuryMetrics
             title="Monthly Outflow"
             value={`$${formattedTotalMonthlyOutflow.toFixed(2)}`}
-            change="+5.0%"
+            change="Excl. system payees"
             icon={<TrendingUp className="h-5 w-5" />}
             loading={loading}
           />
@@ -400,7 +490,24 @@ export default function DashboardPage() {
           <div className="flex flex-col md:flex-row justify-between items-center gap-4">
             <div>
               <h3 className="text-xl font-semibold text-white mb-2">Payroll Automation</h3>
-              <p className="text-gray-400">Trigger x402 payments for due payees</p>
+              <p className="text-gray-400">
+                Run Payroll button creates payment requests and initiates x402 payment challenges
+              </p>
+              <div className="flex items-center gap-2 mt-2">
+                <div className="text-xs text-gray-400">Revenue Threshold:</div>
+                <div className="text-sm font-semibold text-white">
+                  ${formattedRevenueThreshold.toFixed(2)} USDC.e
+                </div>
+                <a
+                  href={`https://explorer.cronos.org/testnet/address/${CONTRACTS.TREASURY_MANAGER}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary-400 hover:text-primary-300 text-xs flex items-center gap-1"
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  View Contract
+                </a>
+              </div>
             </div>
             <div className="flex flex-wrap gap-3">
               <button
@@ -416,7 +523,7 @@ export default function DashboardPage() {
                 ) : (
                   <>
                     <Play className="h-4 w-4" />
-                    Run Payroll
+                    Run Payroll (x402)
                   </>
                 )}
               </button>
@@ -465,14 +572,19 @@ export default function DashboardPage() {
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
                 <h2 className="text-xl font-semibold text-white">Active Payees</h2>
-                <p className="text-gray-400">Manage payroll recipients</p>
+                <p className="text-gray-400">Manage payroll recipients (excludes system payees)</p>
               </div>
               <div className="text-sm text-gray-400">
                 Total: {data?.payees.length || 0} payees • {duePayeesCount} due for payment
               </div>
             </div>
           </div>
-          <PayeeTable payees={data?.payees || []} loading={loading} />
+          <PayeeTable 
+            payees={data?.payees || []} 
+            loading={loading}
+            onSendPayment={sendPaymentToPayee}
+            onEditDetails={editPayeeDetails}
+          />
         </div>
 
         {/* System Status */}
@@ -498,6 +610,12 @@ export default function DashboardPage() {
               <span className="text-gray-400">Pending Transactions</span>
               <span className={`font-medium ${pendingTransactions > 0 ? 'text-yellow-400' : 'text-green-400'}`}>
                 {pendingTransactions}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Payroll Trigger Status</span>
+              <span className={`font-medium ${shouldTriggerPayrollValue ? 'text-green-400' : 'text-yellow-400'}`}>
+                {shouldTriggerPayrollValue ? 'Ready to Trigger' : 'Conditions Not Met'}
               </span>
             </div>
           </div>

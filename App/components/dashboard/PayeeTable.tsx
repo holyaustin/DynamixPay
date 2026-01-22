@@ -1,8 +1,9 @@
 // components/dashboard/PayeeTable.tsx
+// components/dashboard/PayeeTable.tsx
 'use client'
 
 import { useState } from 'react'
-import { ExternalLink, MoreVertical } from 'lucide-react'
+import { ExternalLink, MoreVertical, Send, Edit, DollarSign } from 'lucide-react'
 import { formatAddress, formatUSDC } from '@/lib/utils/format'
 
 interface Payee {
@@ -15,9 +16,16 @@ interface Payee {
 interface PayeeTableProps {
   payees: Payee[]
   loading: boolean
+  onSendPayment?: (address: string) => void
+  onEditDetails?: (address: string) => void
 }
 
-export default function PayeeTable({ payees, loading }: PayeeTableProps) {
+export default function PayeeTable({ 
+  payees, 
+  loading,
+  onSendPayment,
+  onEditDetails
+}: PayeeTableProps) {
   const [activeMenu, setActiveMenu] = useState<string | null>(null)
 
   const formatDate = (date: Date) => {
@@ -27,6 +35,20 @@ export default function PayeeTable({ payees, loading }: PayeeTableProps) {
       day: 'numeric',
       year: 'numeric',
     })
+  }
+
+  const handleSendPayment = (address: string) => {
+    setActiveMenu(null)
+    if (onSendPayment) {
+      onSendPayment(address)
+    }
+  }
+
+  const handleEditDetails = (address: string) => {
+    setActiveMenu(null)
+    if (onEditDetails) {
+      onEditDetails(address)
+    }
   }
 
   if (loading && payees.length === 0) {
@@ -72,7 +94,7 @@ export default function PayeeTable({ payees, loading }: PayeeTableProps) {
                     {formatAddress(payee.address)}
                   </div>
                   <a
-                    href={`https://cronos.org/explorer/testnet3/address/${payee.address}`}
+                    href={`https://explorer.cronos.org/testnet/address/${payee.address}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center text-xs text-gray-400 hover:text-primary-400 mt-1"
@@ -84,7 +106,7 @@ export default function PayeeTable({ payees, loading }: PayeeTableProps) {
               </td>
               <td className="p-4 hidden md:table-cell">
                 <div className="font-semibold text-white">
-                  {formatUSDC(payee.salary)} USDC
+                  {formatUSDC(payee.salary)} USDC.e
                 </div>
                 <div className="text-xs text-gray-400">Monthly</div>
               </td>
@@ -93,13 +115,19 @@ export default function PayeeTable({ payees, loading }: PayeeTableProps) {
               </td>
               <td className="p-4 hidden lg:table-cell">
                 <div className="text-gray-300">
-                  {formatUSDC(payee.accrued)} USDC
+                  {formatUSDC(payee.accrued)} USDC.e
                 </div>
               </td>
               <td className="p-4">
-                <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-900/30 text-green-400 border border-green-800">
-                  Active
-                </span>
+                {payee.lastPayment.getFullYear() === 1970 ? (
+                  <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-blue-900/30 text-blue-400 border border-blue-800">
+                    New
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-900/30 text-green-400 border border-green-800">
+                    Active
+                  </span>
+                )}
               </td>
               <td className="p-4">
                 <div className="relative">
@@ -113,10 +141,18 @@ export default function PayeeTable({ payees, loading }: PayeeTableProps) {
                   {activeMenu === payee.address && (
                     <div className="absolute right-0 mt-2 w-48 rounded-lg bg-surface border border-border shadow-xl z-10 animate-fade-in">
                       <div className="p-1">
-                        <button className="flex items-center w-full px-3 py-2 text-sm text-gray-300 hover:bg-gray-800 rounded-md">
+                        <button 
+                          onClick={() => handleSendPayment(payee.address)}
+                          className="flex items-center w-full px-3 py-2 text-sm text-gray-300 hover:bg-gray-800 rounded-md"
+                        >
+                          <Send className="mr-2 h-4 w-4" />
                           Send Payment
                         </button>
-                        <button className="flex items-center w-full px-3 py-2 text-sm text-gray-300 hover:bg-gray-800 rounded-md">
+                        <button 
+                          onClick={() => handleEditDetails(payee.address)}
+                          className="flex items-center w-full px-3 py-2 text-sm text-gray-300 hover:bg-gray-800 rounded-md"
+                        >
+                          <Edit className="mr-2 h-4 w-4" />
                           Edit Details
                         </button>
                       </div>
