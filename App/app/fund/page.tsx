@@ -344,7 +344,7 @@ export default function FundPage() {
                 {CONTRACTS.TREASURY_MANAGER}
               </div>
               <a
-                href={`https://cronos.org/explorer/testnet3/address/${CONTRACTS.TREASURY_MANAGER}`}
+                href={`https://explorer.cronos.org/testnet/address/${CONTRACTS.TREASURY_MANAGER}#tokentxns`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center text-primary-400 hover:text-primary-300 text-sm"
