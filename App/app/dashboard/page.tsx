@@ -22,13 +22,16 @@ import {
   calculateTotalMonthlyOutflow,
   Payee,
   getRevenueThreshold,
-  shouldTriggerPayroll
+  shouldTriggerPayroll,
+  getPaymentRequest
 } from '@/lib/blockchain/treasury'
 import { getBalance } from '@/lib/blockchain/ethers-utils'
 import { treasuryEventListener } from '@/lib/blockchain/event-listener'
 import { transactionStore, Transaction } from '@/lib/storage/transaction-store'
 import { EnhancedErrorHandler, withGlobalErrorHandling } from '@/lib/utils/error-handler'
 import { CONTRACTS } from '@/config/contracts'
+import toast from 'react-hot-toast'
+import { X402PaymentFlow, PaymentChallenge } from '@/lib/x402/payment-flow'
 
 interface DashboardData {
   treasuryBalance: bigint
@@ -171,6 +174,62 @@ export default function DashboardPage() {
     }
   }
 
+  // Helper function to process x402 payment
+  const processX402Payment = async (
+    challengeUrl: string,
+    signer: any,
+    requestId?: string
+  ): Promise<{ success: boolean; paymentId?: string; txHash?: string; error?: string }> => {
+    try {
+      // Fetch challenge from API
+      const response = await fetch(challengeUrl);
+      
+      if (response.status === 402) {
+        const challenge: PaymentChallenge = await response.json();
+        
+        const toastId = toast.loading('Processing x402 payment...');
+        
+        const result = await X402PaymentFlow.processPaymentChallenge(challenge, signer);
+        
+        if (result.error) {
+          toast.error(`Payment failed: ${result.error}`, { id: toastId });
+          return { success: false, error: result.error };
+        }
+        
+        toast.success('Payment settled successfully!', { id: toastId });
+        
+        // Update contract status via webhook
+        if (requestId) {
+          await fetch('/api/x402/webhook', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              event: 'payment.settled',
+              paymentId: result.paymentId,
+              requestId: requestId,
+              txHash: result.txHash,
+              timestamp: new Date().toISOString()
+            })
+          }).catch(err => {
+            console.error('Failed to update webhook:', err);
+          });
+        }
+        
+        return { 
+          success: true, 
+          paymentId: result.paymentId, 
+          txHash: result.txHash 
+        };
+      } else {
+        throw new Error('Unexpected response from challenge endpoint');
+      }
+    } catch (error: any) {
+      console.error('x402 payment error:', error);
+      toast.error(`Payment error: ${error.message}`);
+      return { success: false, error: error.message };
+    }
+  };
+
   useEffect(() => {
     if (!authenticated && ready) {
       router.push('/')
@@ -189,23 +248,23 @@ export default function DashboardPage() {
 
   const triggerPayroll = withGlobalErrorHandling(async (): Promise<void> => {
     if (!user) {
-      alert('Please connect your wallet')
-      return
+      toast.error('Please connect your wallet');
+      return;
     }
 
-    setPayrollLoading(true)
+    setPayrollLoading(true);
 
     try {
-      const provider = await (window as any).ethereum
+      const provider = await (window as any).ethereum;
       if (!provider) {
-        throw new Error('No wallet provider found')
+        throw new Error('No wallet provider found');
       }
       
       // Create ethers provider and signer
-      const ethers = await import('ethers')
-      const ethersProvider = new ethers.BrowserProvider(provider)
-      const signer = await ethersProvider.getSigner()
-      const userAddress = await signer.getAddress()
+      const ethers = await import('ethers');
+      const ethersProvider = new ethers.BrowserProvider(provider);
+      const signer = await ethersProvider.getSigner();
+      const userAddress = await signer.getAddress();
       
       // Track transaction
       const txId = transactionStore.addTransaction({
@@ -214,10 +273,11 @@ export default function DashboardPage() {
         status: 'pending',
         from: userAddress,
         to: CONTRACTS.TREASURY_MANAGER,
-      })
+      });
       
       // First, create payment requests (this creates x402 challenges)
-      const result = await createPaymentRequests(signer)
+      toast.loading('Creating payment requests...');
+      const result = await createPaymentRequests(signer);
       
       if (result.success && result.transactionHash) {
         // Update transaction record
@@ -226,83 +286,138 @@ export default function DashboardPage() {
           status: 'confirmed',
           confirmedAt: new Date(),
           blockNumber: result.requestIds?.length
-        })
+        });
         
-        alert('Payment requests created successfully! Now processing x402 payments...')
+        toast.success('Payment requests created! Processing x402 payments...');
         
         // Process x402 payments for each request
         if (result.requestIds && result.requestIds.length > 0) {
-          for (const requestId of result.requestIds) {
-            // Call x402 challenge endpoint for each request
-            const challengeResponse = await fetch(`/api/x402/challenge?requestId=${requestId}`, {
-              method: 'GET'
-            })
+          const paymentsPromises = result.requestIds.map(async (requestIdBigInt) => {
+            const requestId = requestIdBigInt.toString(); // Convert bigint to string
             
-            if (challengeResponse.ok) {
-              const challenge = await challengeResponse.json()
+            try {
+              // Get payment request details from contract
+              const paymentRequest = await getPaymentRequest(requestIdBigInt);
               
-              // In a real implementation, you would:
-              // 1. Present the x402 challenge to the user
-              // 2. Let the x402 facilitator process the payment
-              // 3. Call /api/x402/settle when payment is complete
-              
-              console.log(`x402 challenge created for request ${requestId}:`, challenge)
+              if (paymentRequest && !paymentRequest.settled) {
+                // Create x402 challenge URL
+                const challengeUrl = `/api/x402/challenge?payee=${paymentRequest.payee}&amount=${paymentRequest.amount.toString()}&requestId=${requestId}&description=Payroll+Payment`;
+                
+                // Process payment
+                const paymentResult = await processX402Payment(challengeUrl, signer, requestId);
+                
+                if (paymentResult.success) {
+                  toast.success(`Payment completed for ${paymentRequest.payee.substring(0, 10)}...`);
+                  return { success: true, requestId };
+                } else {
+                  toast.error(`Payment failed for request ${requestId}`);
+                  return { success: false, requestId, error: paymentResult.error };
+                }
+              }
+            } catch (error: any) {
+              console.error(`Failed to process payment for request ${requestId}:`, error);
+              toast.error(`Payment error for request ${requestId}: ${error.message}`);
+              return { success: false, requestId, error: error.message };
             }
+            return { success: false, requestId };
+          });
+          
+          // Wait for all payments to complete
+          const paymentResults = await Promise.all(paymentsPromises);
+          const successfulPayments = paymentResults.filter(r => r.success).length;
+          
+          if (successfulPayments > 0) {
+            toast.success(`Successfully processed ${successfulPayments} of ${result.requestIds.length} payments`);
+          } else {
+            toast.error('No payments were successfully processed');
           }
         }
         
         // Refresh data
-        await fetchDashboardData()
+        await fetchDashboardData();
       } else {
-        throw new Error(result.error || 'Failed to trigger payroll')
+        throw new Error(result.error || 'Failed to trigger payroll');
       }
     } catch (error: any) {
       // Update transaction as failed
-      const transactions = transactionStore.getAllTransactions()
-      const lastTx = transactions[0]
+      const transactions = transactionStore.getAllTransactions();
+      const lastTx = transactions[0];
       if (lastTx) {
         transactionStore.updateTransaction(lastTx.id, {
           status: 'failed',
           error: error.message
-        })
+        });
       }
       
-      throw error
+      toast.error(`Payroll trigger failed: ${error.message}`);
+      throw error;
     } finally {
-      setPayrollLoading(false)
+      setPayrollLoading(false);
     }
-  }, 'triggerPayroll')
+  }, 'triggerPayroll');
 
   const refreshData = async (): Promise<void> => {
-    setIsRefreshing(true)
+    setIsRefreshing(true);
     try {
-      await fetchDashboardData()
+      await fetchDashboardData();
+      toast.success('Data refreshed');
+    } catch (error) {
+      toast.error('Failed to refresh data');
     } finally {
-      setIsRefreshing(false)
+      setIsRefreshing(false);
     }
-  }
+  };
 
   const addPayee = (): void => {
-    router.push('/payroll?action=add')
-  }
+    router.push('/payroll?action=add');
+  };
 
   const manageSettings = (): void => {
-    router.push('/payroll?action=settings')
-  }
+    router.push('/payroll?action=settings');
+  };
 
   const viewTransactions = (): void => {
-    router.push('/transactions')
-  }
+    router.push('/transactions');
+  };
 
-  const sendPaymentToPayee = (payeeAddress: string): void => {
-    // Navigate to x402 challenge page with payee details
-    router.push(`/api/x402/challenge?payee=${payeeAddress}&amount=1000&description=Manual+Payment`)
-  }
+  const sendPaymentToPayee = async (payeeAddress: string): Promise<void> => {
+    if (!user) {
+      toast.error('Please connect your wallet');
+      return;
+    }
+    
+    try {
+      const provider = await (window as any).ethereum;
+      if (!provider) {
+        throw new Error('No wallet provider found');
+      }
+      
+      const ethers = await import('ethers');
+      const ethersProvider = new ethers.BrowserProvider(provider);
+      const signer = await ethersProvider.getSigner();
+      
+      // For manual payments, use a fixed amount or prompt user
+      const amount = "1000000"; // 1 USDC in base units (6 decimals)
+      const challengeUrl = `/api/x402/challenge?payee=${payeeAddress}&amount=${amount}&description=Manual+Payment`;
+      
+      toast.loading('Processing manual payment...');
+      const result = await processX402Payment(challengeUrl, signer);
+      
+      if (result.success) {
+        toast.success('Manual payment completed successfully!');
+        await fetchDashboardData(); // Refresh data
+      } else {
+        toast.error(`Manual payment failed: ${result.error}`);
+      }
+    } catch (error: any) {
+      toast.error(`Payment error: ${error.message}`);
+    }
+  };
 
   const editPayeeDetails = (payeeAddress: string): void => {
     // Navigate to edit page with payee address
-    router.push(`/payroll?action=edit&address=${payeeAddress}`)
-  }
+    router.push(`/payroll?action=edit&address=${payeeAddress}`);
+  };
 
   if (!authenticated) {
     return (
@@ -485,86 +600,86 @@ export default function DashboardPage() {
           />
         </div>
 
-{/* Actions - Fixed for responsive layout */}
-<div className="mb-8 p-6 bg-black/40 backdrop-blur-sm rounded-2xl border border-gray-800">
-  <div className="flex flex-col lg:flex-row justify-between items-center gap-6">
-    <div className="flex-1">
-      <h3 className="text-xl font-semibold text-white mb-2">Payroll Automation</h3>
-      <p className="text-gray-400">
-        Run Payroll button creates payment requests and initiates x402 payment challenges
-      </p>
-      <div className="flex items-center gap-2 mt-2">
-        <div className="text-xs text-gray-400">Revenue Threshold:</div>
-        <div className="text-sm font-semibold text-white">
-          ${formattedRevenueThreshold.toFixed(2)} USDC.e
-        </div>
-        <a
-          href={`https://explorer.cronos.org/testnet/address/${CONTRACTS.TREASURY_MANAGER}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-primary-400 hover:text-primary-300 text-xs flex items-center gap-1"
-        >
-          <ExternalLink className="h-3 w-3" />
-          View Contract
-        </a>
-      </div>
-    </div>
-    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto">
-      <button
-        onClick={triggerPayroll}
-        disabled={payrollLoading || duePayeesCount === 0}
-        className="px-4 py-3 rounded-lg bg-gradient-to-r from-primary-500 to-primary-600 text-white font-semibold hover:from-primary-600 hover:to-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
-      >
-        {payrollLoading ? (
-          <>
-            <div className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-            Processing...
-          </>
-        ) : (
-          <>
-            <Play className="h-4 w-4" />
-            Run Payroll (x402)
-          </>
-        )}
-      </button>
-      
-      <button
-        onClick={addPayee}
-        className="px-4 py-3 rounded-lg bg-gradient-to-r from-secondary-500 to-secondary-600 text-white font-semibold hover:from-secondary-600 hover:to-secondary-700 transition-all flex items-center justify-center gap-2"
-      >
-        <Plus className="h-4 w-4" />
-        Add Payee
-      </button>
-      
-      <button
-        onClick={() => router.push('/fund')}
-        className="px-4 py-3 rounded-lg bg-gray-800 border border-gray-700 text-gray-300 font-semibold hover:bg-gray-700 hover:text-white transition-colors"
-      >
-        Fund Treasury
-      </button>
-    </div>
-  </div>
-  
-  {/* Due Payments Alert */}
-  {duePayeesCount > 0 && (
-    <div className="mt-4 p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-      <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
-        <div className="flex items-center">
-          <Bell className="h-5 w-5 text-yellow-500 mr-2" />
-          <div className="text-yellow-500">
-            <span className="font-semibold">{duePayeesCount} payee(s)</span> have payments due. Run payroll to process.
+        {/* Actions - Fixed for responsive layout */}
+        <div className="mb-8 p-6 bg-black/40 backdrop-blur-sm rounded-2xl border border-gray-800">
+          <div className="flex flex-col lg:flex-row justify-between items-center gap-6">
+            <div className="flex-1">
+              <h3 className="text-xl font-semibold text-white mb-2">Payroll Automation</h3>
+              <p className="text-gray-400">
+                Run Payroll button creates payment requests and initiates x402 payment challenges
+              </p>
+              <div className="flex items-center gap-2 mt-2">
+                <div className="text-xs text-gray-400">Revenue Threshold:</div>
+                <div className="text-sm font-semibold text-white">
+                  ${formattedRevenueThreshold.toFixed(2)} USDC.e
+                </div>
+                <a
+                  href={`https://explorer.cronos.org/testnet/address/${CONTRACTS.TREASURY_MANAGER}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary-400 hover:text-primary-300 text-xs flex items-center gap-1"
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  View Contract
+                </a>
+              </div>
+            </div>
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto">
+              <button
+                onClick={triggerPayroll}
+                disabled={payrollLoading || duePayeesCount === 0}
+                className="px-4 py-3 rounded-lg bg-gradient-to-r from-primary-500 to-primary-600 text-white font-semibold hover:from-primary-600 hover:to-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+              >
+                {payrollLoading ? (
+                  <>
+                    <div className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-4 w-4" />
+                    Run Payroll (x402)
+                  </>
+                )}
+              </button>
+              
+              <button
+                onClick={addPayee}
+                className="px-4 py-3 rounded-lg bg-gradient-to-r from-secondary-500 to-secondary-600 text-white font-semibold hover:from-secondary-600 hover:to-secondary-700 transition-all flex items-center justify-center gap-2"
+              >
+                <Plus className="h-4 w-4" />
+                Add Payee
+              </button>
+              
+              <button
+                onClick={() => router.push('/fund')}
+                className="px-4 py-3 rounded-lg bg-gray-800 border border-gray-700 text-gray-300 font-semibold hover:bg-gray-700 hover:text-white transition-colors"
+              >
+                Fund Treasury
+              </button>
+            </div>
           </div>
+          
+          {/* Due Payments Alert */}
+          {duePayeesCount > 0 && (
+            <div className="mt-4 p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+                <div className="flex items-center">
+                  <Bell className="h-5 w-5 text-yellow-500 mr-2" />
+                  <div className="text-yellow-500">
+                    <span className="font-semibold">{duePayeesCount} payee(s)</span> have payments due. Run payroll to process.
+                  </div>
+                </div>
+                <button
+                  onClick={triggerPayroll}
+                  className="px-4 py-2 text-sm bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 whitespace-nowrap"
+                >
+                  Pay Now
+                </button>
+              </div>
+            </div>
+          )}
         </div>
-        <button
-          onClick={triggerPayroll}
-          className="px-4 py-2 text-sm bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 whitespace-nowrap"
-        >
-          Pay Now
-        </button>
-      </div>
-    </div>
-  )}
-</div>
 
         {/* Payees Table */}
         <div className="bg-black/40 backdrop-blur-sm rounded-2xl border border-gray-800 overflow-hidden">

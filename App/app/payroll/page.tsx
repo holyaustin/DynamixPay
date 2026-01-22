@@ -9,13 +9,14 @@ import {
   DollarSign, Users, Clock, CheckCircle, 
   AlertCircle, Play, Pause, RefreshCw,
   Plus, Settings, Wallet, ExternalLink,
-  Info
+  Info, ArrowRight
 } from 'lucide-react'
 import { CONTRACTS, TREASURY_ABI } from '@/config/contracts'
-import { getActivePayees, addPayee, createPaymentRequests, updateRevenueThreshold } from '@/lib/blockchain/treasury'
+import { getActivePayees, addPayee, createPaymentRequests, updateRevenueThreshold, getPaymentRequest } from '@/lib/blockchain/treasury'
 import { getBalance } from '@/lib/blockchain/ethers-utils'
 import { x402Agent } from '@/lib/agent/x402-agent'
 import toast from 'react-hot-toast'
+import { X402PaymentFlow, PaymentChallenge } from '@/lib/x402/payment-flow'
 
 interface PayeeForm {
   address: string
@@ -37,6 +38,7 @@ export default function PayrollPage() {
   const [revenueThreshold, setRevenueThreshold] = useState<string>('10000')
   const [updatingThreshold, setUpdatingThreshold] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [processingPayments, setProcessingPayments] = useState<string[]>([])
 
   useEffect(() => {
     if (authenticated) {
@@ -120,123 +122,188 @@ export default function PayrollPage() {
     }
   }
 
-  const triggerPayroll = async () => {
-    if (!user) {
-      toast.error('Please connect your wallet')
-      return
+  // Process individual x402 payment
+  const processX402Payment = async (payee: string, amount: bigint, requestId?: string | bigint) => {
+    if (!user?.wallet?.address) {
+      toast.error('Please connect your wallet');
+      return null;
     }
 
-    setLoading(true)
-    setError('')
+    const requestIdStr = requestId ? requestId.toString() : undefined;
 
     try {
-      const provider = await (window as any).ethereum
+      const provider = await (window as any).ethereum;
       if (!provider) {
-        throw new Error('No wallet provider found')
+        throw new Error('No wallet provider found');
+      }
+      
+      const ethers = await import('ethers');
+      const ethersProvider = new ethers.BrowserProvider(provider);
+      const signer = await ethersProvider.getSigner();
+      
+      // Create challenge URL
+      const params = new URLSearchParams({
+        payee,
+        amount: amount.toString(),
+        description: 'Payroll Payment'
+      });
+      
+      if (requestIdStr) {
+        params.append('requestId', requestIdStr);
+      }
+      
+      const challengeUrl = `/api/x402/challenge?${params.toString()}`;
+      
+      // Add to processing list
+      if (requestIdStr) {
+        setProcessingPayments(prev => [...prev, requestIdStr]);
+      }
+      
+      // Fetch challenge
+      const response = await fetch(challengeUrl);
+      
+      if (response.status === 402) {
+        const challenge: PaymentChallenge = await response.json();
+        
+        const toastId = toast.loading(`Processing payment for ${payee.substring(0, 10)}...`);
+        
+        const result = await X402PaymentFlow.processPaymentChallenge(challenge, signer);
+        
+        if (result.error || !result.txHash) {
+          toast.error(`Payment failed: ${result.error}`, { id: toastId });
+          return { success: false, error: result.error };
+        }
+        
+        toast.success('Payment settled successfully!', { id: toastId });
+        
+        // Update contract status via webhook
+        if (requestIdStr) {
+          await fetch('/api/x402/webhook', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              event: 'payment.settled',
+              paymentId: result.paymentId,
+              requestId: requestIdStr,
+              payee,
+              amount: amount.toString(),
+              txHash: result.txHash,
+              timestamp: new Date().toISOString()
+            })
+          }).catch(err => {
+            console.error('Failed to update webhook:', err);
+          });
+        }
+        
+        return { 
+          success: true, 
+          paymentId: result.paymentId, 
+          txHash: result.txHash 
+        };
+      } else {
+        throw new Error('Unexpected response from challenge endpoint');
+      }
+    } catch (error: any) {
+      console.error('x402 payment error:', error);
+      toast.error(`Payment failed: ${error.message}`);
+      return { success: false, error: error.message };
+    } finally {
+      if (requestIdStr) {
+        setProcessingPayments(prev => prev.filter(id => id !== requestIdStr));
+      }
+    }
+  };
+
+  const triggerPayroll = async () => {
+    if (!user) {
+      toast.error('Please connect your wallet');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+
+    try {
+      const provider = await (window as any).ethereum;
+      if (!provider) {
+        throw new Error('No wallet provider found');
       }
       
       // Create ethers provider and signer
-      const ethers = await import('ethers')
-      const ethersProvider = new ethers.BrowserProvider(provider)
-      const signer = await ethersProvider.getSigner()
+      const ethers = await import('ethers');
+      const ethersProvider = new ethers.BrowserProvider(provider);
+      const signer = await ethersProvider.getSigner();
       
       // Call createPaymentRequests
-      const result = await createPaymentRequests(signer)
+      toast.loading('Creating payment requests...');
+      const result = await createPaymentRequests(signer);
       
       if (result.success) {
-        toast.success('Payment requests created successfully!')
+        toast.success('Payment requests created successfully!');
         
         // Process x402 payments for each request
         if (result.requestIds && result.requestIds.length > 0) {
-          for (const requestId of result.requestIds) {
+          toast(`Processing ${result.requestIds.length} payments via x402...`, { duration: 3000 });
+          
+          const paymentsPromises = result.requestIds.map(async (requestIdBigInt) => {
+            const requestId = requestIdBigInt.toString(); // Convert bigint to string
+            
             try {
               // Get payment request details from contract
-              const ethers = await import('ethers')
-              const provider = new ethers.JsonRpcProvider('https://evm-t3.cronos.org')
-              const treasuryContract = new ethers.Contract(CONTRACTS.TREASURY_MANAGER, TREASURY_ABI, provider)
+              const paymentRequest = await getPaymentRequest(requestIdBigInt);
               
-              const paymentRequest = await treasuryContract.getPaymentRequest(requestId)
-              const [payee, amount] = paymentRequest
-              
-              // Call x402 challenge API
-              const challengeResponse = await fetch(
-                `/api/x402/challenge?payee=${payee}&amount=${amount.toString()}&requestId=${requestId}`,
-                { method: 'GET' }
-              )
-              
-              if (challengeResponse.ok) {
-                const challenge = await challengeResponse.json()
+              if (paymentRequest && !paymentRequest.settled) {
+                const paymentResult = await processX402Payment(
+                  paymentRequest.payee,
+                  paymentRequest.amount,
+                  requestId
+                );
                 
-                // Store challenge for processing
-                localStorage.setItem(`x402_challenge_${requestId}`, JSON.stringify(challenge))
-                
-                // Show x402 challenge to user
-                toast(
-                  <div>
-                    <p className="font-semibold">x402 Payment Challenge Created</p>
-                    <p className="text-sm mt-1">For payee: {payee.substring(0, 10)}...</p>
-                    <p className="text-sm">Amount: ${(Number(amount) / 1_000_000).toFixed(2)} USDC.e</p>
-                    <button
-                      onClick={() => {
-                        // In a real app, you would redirect to x402 payment page
-                        // or show a QR code with the challenge
-                        navigator.clipboard.writeText(JSON.stringify(challenge))
-                        toast.success('Challenge copied to clipboard')
-                      }}
-                      className="mt-2 px-3 py-1 text-sm bg-primary-500 rounded hover:bg-primary-600"
-                    >
-                      Copy Challenge
-                    </button>
-                  </div>,
-                  { duration: 8000 }
-                )
-                
-                // Auto-process with x402 facilitator (simulated)
-                setTimeout(async () => {
-                  try {
-                    // In a real implementation, you would send the challenge to x402 facilitator
-                    // For now, we'll simulate the process
-                    toast.loading(`Processing x402 payment for ${payee.substring(0, 10)}...`)
-                    
-                    // Simulate payment processing
-                    await new Promise(resolve => setTimeout(resolve, 3000))
-                    
-                    // Call settle endpoint (simulated)
-                    const settleResponse = await fetch('/api/x402/settle', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({
-                        paymentHeader: { version: 1, timestamp: Date.now() },
-                        paymentRequirements: challenge.accepts[0],
-                        userAddress: user.wallet?.address
-                      })
-                    })
-                    
-                    if (settleResponse.ok) {
-                      toast.success(`Payment settled for ${payee.substring(0, 10)}!`)
-                    }
-                  } catch (error) {
-                    console.error('Failed to process x402 payment:', error)
-                    toast.error('Failed to process x402 payment')
-                  }
-                }, 2000)
+                if (paymentResult?.success) {
+                  return { success: true, requestId };
+                } else {
+                  return { 
+                    success: false, 
+                    requestId, 
+                    error: paymentResult?.error || 'Unknown error' 
+                  };
+                }
               }
-            } catch (error) {
-              console.error(`Failed to create x402 challenge for request ${requestId}:`, error)
+              return { success: false, requestId, error: 'No payment request found' };
+            } catch (error: any) {
+              console.error(`Failed to process payment for request ${requestId}:`, error);
+              return { success: false, requestId, error: error.message };
             }
+          });
+          
+          // Process payments with a small delay between each to avoid rate limiting
+          const results = [];
+          for (let i = 0; i < paymentsPromises.length; i++) {
+            if (i > 0) {
+              await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay
+            }
+            results.push(await paymentsPromises[i]);
+          }
+          
+          const successfulPayments = results.filter(r => r.success).length;
+          
+          if (successfulPayments > 0) {
+            toast.success(`Successfully processed ${successfulPayments} of ${results.length} payments`);
+          } else {
+            toast.error('No payments were successfully processed');
           }
         }
         
-        fetchPayrollData()
+        fetchPayrollData();
       } else {
-        throw new Error(result.error || 'Failed to trigger payroll')
+        throw new Error(result.error || 'Failed to trigger payroll');
       }
     } catch (error: any) {
-      console.error('Failed to trigger payroll:', error)
-      setError(error.message || 'Failed to trigger payroll')
-      toast.error(`Failed to trigger payroll: ${error.message || 'Unknown error'}`)
+      console.error('Failed to trigger payroll:', error);
+      setError(error.message || 'Failed to trigger payroll');
+      toast.error(`Failed to trigger payroll: ${error.message || 'Unknown error'}`);
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
   }
 
@@ -248,126 +315,126 @@ export default function PayrollPage() {
         body: JSON.stringify({
           action: isRunning ? 'stop' : 'start'
         })
-      })
+      });
       
-      const data = await response.json()
+      const data = await response.json();
       if (data.success) {
-        setIsRunning(!isRunning)
-        setAutomationEnabled(!isRunning)
-        toast.success(`Automation ${!isRunning ? 'started' : 'stopped'}`)
+        setIsRunning(!isRunning);
+        setAutomationEnabled(!isRunning);
+        toast.success(`Automation ${!isRunning ? 'started' : 'stopped'}`);
       } else {
-        throw new Error(data.error || 'Failed to toggle automation')
+        throw new Error(data.error || 'Failed to toggle automation');
       }
     } catch (error: any) {
-      console.error('Failed to toggle automation:', error)
-      toast.error(`Failed to toggle automation: ${error.message || 'Unknown error'}`)
+      console.error('Failed to toggle automation:', error);
+      toast.error(`Failed to toggle automation: ${error.message || 'Unknown error'}`);
     }
   }
 
   const handleAddPayee = async () => {
     if (!payeeForm.address || !payeeForm.salary) {
-      toast.error('Please fill in all fields')
-      return
+      toast.error('Please fill in all fields');
+      return;
     }
 
     if (!user) {
-      toast.error('Please connect your wallet')
-      return
+      toast.error('Please connect your wallet');
+      return;
     }
 
     // Validate Ethereum address
     if (!/^0x[a-fA-F0-9]{40}$/.test(payeeForm.address)) {
-      toast.error('Invalid Ethereum address')
-      return
+      toast.error('Invalid Ethereum address');
+      return;
     }
 
     // Validate salary
     if (parseFloat(payeeForm.salary) <= 0) {
-      toast.error('Salary must be greater than 0')
-      return
+      toast.error('Salary must be greater than 0');
+      return;
     }
 
     try {
-      const provider = await (window as any).ethereum
+      const provider = await (window as any).ethereum;
       if (!provider) {
-        throw new Error('No wallet provider found')
+        throw new Error('No wallet provider found');
       }
       
       // Create ethers provider and signer
-      const ethers = await import('ethers')
-      const ethersProvider = new ethers.BrowserProvider(provider)
-      const signer = await ethersProvider.getSigner()
+      const ethers = await import('ethers');
+      const ethersProvider = new ethers.BrowserProvider(provider);
+      const signer = await ethersProvider.getSigner();
       
       // Show loading toast
-      const loadingToast = toast.loading('Adding payee to blockchain...')
+      const loadingToast = toast.loading('Adding payee to blockchain...');
       
       // Add payee
-      const result = await addPayee(signer, payeeForm.address, payeeForm.salary)
+      const result = await addPayee(signer, payeeForm.address, payeeForm.salary);
       
       if (result.success) {
-        toast.dismiss(loadingToast)
-        toast.success('Payee added successfully!')
-        setShowAddPayee(false)
-        setPayeeForm({ address: '', salary: '' })
+        toast.dismiss(loadingToast);
+        toast.success('Payee added successfully!');
+        setShowAddPayee(false);
+        setPayeeForm({ address: '', salary: '' });
         
         // Refresh data to show new payee
         setTimeout(() => {
-          fetchPayrollData()
-        }, 3000) // Wait for blockchain confirmation
+          fetchPayrollData();
+        }, 3000); // Wait for blockchain confirmation
       } else {
-        toast.dismiss(loadingToast)
-        throw new Error(result.error || 'Failed to add payee')
+        toast.dismiss(loadingToast);
+        throw new Error(result.error || 'Failed to add payee');
       }
     } catch (error: any) {
-      console.error('Error adding payee:', error)
-      toast.error(`Failed to add payee: ${error.message || 'Unknown error'}`)
+      console.error('Error adding payee:', error);
+      toast.error(`Failed to add payee: ${error.message || 'Unknown error'}`);
     }
   }
 
   const handleUpdateThreshold = async () => {
     if (!revenueThreshold || parseFloat(revenueThreshold) <= 0) {
-      toast.error('Please enter a valid threshold amount')
-      return
+      toast.error('Please enter a valid threshold amount');
+      return;
     }
 
     if (!user) {
-      toast.error('Please connect your wallet')
-      return
+      toast.error('Please connect your wallet');
+      return;
     }
 
-    setUpdatingThreshold(true)
-    setError('')
+    setUpdatingThreshold(true);
+    setError('');
 
     try {
-      const provider = await (window as any).ethereum
+      const provider = await (window as any).ethereum;
       if (!provider) {
-        throw new Error('No wallet provider found')
+        throw new Error('No wallet provider found');
       }
       
       // Create ethers provider and signer
-      const ethers = await import('ethers')
-      const ethersProvider = new ethers.BrowserProvider(provider)
-      const signer = await ethersProvider.getSigner()
+      const ethers = await import('ethers');
+      const ethersProvider = new ethers.BrowserProvider(provider);
+      const signer = await ethersProvider.getSigner();
       
-      const loadingToast = toast.loading('Updating revenue threshold...')
+      const loadingToast = toast.loading('Updating revenue threshold...');
       
       // Update revenue threshold
-      const result = await updateRevenueThreshold(signer, revenueThreshold)
+      const result = await updateRevenueThreshold(signer, revenueThreshold);
       
       if (result.success) {
-        toast.dismiss(loadingToast)
-        toast.success('Revenue threshold updated successfully!')
-        fetchPayrollData()
+        toast.dismiss(loadingToast);
+        toast.success('Revenue threshold updated successfully!');
+        fetchPayrollData();
       } else {
-        toast.dismiss(loadingToast)
-        throw new Error(result.error || 'Failed to update threshold')
+        toast.dismiss(loadingToast);
+        throw new Error(result.error || 'Failed to update threshold');
       }
     } catch (error: any) {
-      console.error('Error updating threshold:', error)
-      setError(error.message || 'Failed to update threshold')
-      toast.error(`Failed to update threshold: ${error.message || 'Unknown error'}`)
+      console.error('Error updating threshold:', error);
+      setError(error.message || 'Failed to update threshold');
+      toast.error(`Failed to update threshold: ${error.message || 'Unknown error'}`);
     } finally {
-      setUpdatingThreshold(false)
+      setUpdatingThreshold(false);
     }
   }
 
@@ -389,8 +456,31 @@ export default function PayrollPage() {
         </p>
       </div>,
       { duration: 10000 }
-    )
-  }
+    );
+  };
+
+  // Function to process a single payee payment
+  const processSinglePayment = async (payee: any) => {
+    if (!user) {
+      toast.error('Please connect your wallet');
+      return;
+    }
+
+    try {
+      const amount = payee.salary;
+      const paymentResult = await processX402Payment(payee.address, payee.salary);
+      
+      if (paymentResult?.success) {
+        toast.success(`Payment to ${payee.address.substring(0, 10)}... completed!`);
+        // Refresh data
+        setTimeout(() => {
+          fetchPayrollData();
+        }, 2000);
+      }
+    } catch (error: any) {
+      toast.error(`Payment error: ${error.message}`);
+    }
+  };
 
   if (!authenticated) {
     return (
@@ -408,7 +498,7 @@ export default function PayrollPage() {
           </div>
         </div>
       </Container>
-    )
+    );
   }
 
   return (
@@ -529,12 +619,12 @@ export default function PayrollPage() {
                 <p className="text-gray-400">
                   <span className="text-primary-400 font-medium">Run Payroll Now:</span> Manually creates payment requests and initiates x402 payments immediately
                 </p>
-              </div>
-              <div className="flex items-center gap-2 mt-3">
-                <div className={`w-2 h-2 rounded-full ${automationEnabled ? 'bg-green-400' : 'bg-gray-500'}`}></div>
-                <span className="text-sm text-gray-300">
-                  {automationEnabled ? 'Automation active' : 'Automation paused'}
-                </span>
+                <div className="flex items-center gap-2 mt-3">
+                  <div className={`w-2 h-2 rounded-full ${automationEnabled ? 'bg-green-400 animate-pulse' : 'bg-gray-500'}`}></div>
+                  <span className="text-sm text-gray-300">
+                    {automationEnabled ? 'Automation active - monitoring for due payments' : 'Automation paused'}
+                  </span>
+                </div>
               </div>
             </div>
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto">
@@ -544,7 +634,7 @@ export default function PayrollPage() {
                   isRunning 
                     ? 'bg-error/20 text-error border border-error/30 hover:bg-error/30' 
                     : 'bg-success/20 text-success border border-success/30 hover:bg-success/30'
-                } transition-colors`}
+                } transition-colors min-w-[160px]`}
               >
                 {isRunning ? (
                   <>
@@ -561,8 +651,8 @@ export default function PayrollPage() {
               
               <button
                 onClick={triggerPayroll}
-                disabled={loading}
-                className="px-4 py-3 rounded-lg bg-gradient-to-r from-primary-500 to-primary-600 text-white font-semibold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-all"
+                disabled={loading || activePayees.length === 0}
+                className="px-4 py-3 rounded-lg bg-gradient-to-r from-primary-500 to-primary-600 text-white font-semibold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-all min-w-[160px]"
               >
                 {loading ? (
                   <>
@@ -579,7 +669,7 @@ export default function PayrollPage() {
               
               <button
                 onClick={() => setShowAddPayee(true)}
-                className="px-4 py-3 rounded-lg bg-gradient-to-r from-secondary-500 to-secondary-600 text-white font-semibold hover:opacity-90 flex items-center justify-center gap-2 transition-all"
+                className="px-4 py-3 rounded-lg bg-gradient-to-r from-secondary-500 to-secondary-600 text-white font-semibold hover:opacity-90 flex items-center justify-center gap-2 transition-all min-w-[140px]"
               >
                 <Plus className="h-5 w-5" />
                 Add Payee
@@ -625,54 +715,89 @@ export default function PayrollPage() {
                     <th className="text-left p-3 text-gray-300 font-medium">Last Paid</th>
                     <th className="text-left p-3 text-gray-300 font-medium hidden lg:table-cell">Accrued</th>
                     <th className="text-left p-3 text-gray-300 font-medium">Status</th>
+                    <th className="text-left p-3 text-gray-300 font-medium">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-800">
-                  {activePayees.map((payee, index) => (
-                    <tr key={index} className="hover:bg-gray-800/30">
-                      <td className="p-3">
-                        <div className="font-mono text-sm text-white">
-                          {payee.address.substring(0, 8)}...{payee.address.substring(payee.address.length - 6)}
-                        </div>
-                        <a
-                          href={`https://explorer.cronos.org/testnet/address/${payee.address}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center text-xs text-gray-400 hover:text-primary-400 mt-1"
-                        >
-                          <ExternalLink className="mr-1 h-3 w-3" />
-                          View
-                        </a>
-                      </td>
-                      <td className="p-3 hidden md:table-cell">
-                        <div className="font-semibold text-white">
-                          ${(Number(payee.salary) / 1_000_000).toFixed(2)} USDC.e
-                        </div>
-                        <div className="text-xs text-gray-400">Monthly</div>
-                      </td>
-                      <td className="p-3">
-                        <div className="text-gray-300">
-                          {payee.lastPayment.toLocaleDateString()}
-                        </div>
-                      </td>
-                      <td className="p-3 hidden lg:table-cell">
-                        <div className="text-gray-300">
-                          ${(Number(payee.accrued) / 1_000_000).toFixed(2)} USDC.e
-                        </div>
-                      </td>
-                      <td className="p-3">
-                        {payee.lastPayment.getFullYear() === 1970 ? (
-                          <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-blue-900/30 text-blue-400 border border-blue-800">
-                            New
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-900/30 text-green-400 border border-green-800">
-                            Active
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                  {activePayees.map((payee, index) => {
+                    const isProcessing = processingPayments.includes(payee.address);
+                    const lastPaymentDate = new Date(payee.lastPayment);
+                    const isDue = lastPaymentDate.getFullYear() === 1970 || 
+                                 (Date.now() - lastPaymentDate.getTime()) > (30 * 24 * 60 * 60 * 1000);
+                    
+                    return (
+                      <tr key={index} className="hover:bg-gray-800/30">
+                        <td className="p-3">
+                          <div className="font-mono text-sm text-white">
+                            {payee.address.substring(0, 8)}...{payee.address.substring(payee.address.length - 6)}
+                          </div>
+                          <a
+                            href={`https://explorer.cronos.org/testnet/address/${payee.address}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center text-xs text-gray-400 hover:text-primary-400 mt-1"
+                          >
+                            View on explorer
+                            <ExternalLink className="ml-1 h-3 w-3" />
+                          </a>
+                        </td>
+                        <td className="p-3 hidden md:table-cell">
+                          <div className="font-semibold text-white">
+                            ${(Number(payee.salary) / 1_000_000).toFixed(2)} USDC.e
+                          </div>
+                          <div className="text-xs text-gray-400">Monthly</div>
+                        </td>
+                        <td className="p-3">
+                          <div className="text-gray-300">
+                            {lastPaymentDate.getFullYear() === 1970 ? 'Never' : lastPaymentDate.toLocaleDateString()}
+                          </div>
+                          {isDue && (
+                            <div className="text-xs text-yellow-400">Payment due</div>
+                          )}
+                        </td>
+                        <td className="p-3 hidden lg:table-cell">
+                          <div className="text-gray-300">
+                            ${(Number(payee.accrued) / 1_000_000).toFixed(2)} USDC.e
+                          </div>
+                        </td>
+                        <td className="p-3">
+                          {isProcessing ? (
+                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-yellow-900/30 text-yellow-400 border border-yellow-800">
+                              <RefreshCw className="mr-1 h-3 w-3 animate-spin" />
+                              Processing
+                            </span>
+                          ) : lastPaymentDate.getFullYear() === 1970 ? (
+                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-blue-900/30 text-blue-400 border border-blue-800">
+                              New
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-900/30 text-green-400 border border-green-800">
+                              Active
+                            </span>
+                          )}
+                        </td>
+                        <td className="p-3">
+                          <button
+                            onClick={() => processSinglePayment(payee)}
+                            disabled={isProcessing || loading}
+                            className="inline-flex items-center px-3 py-1 rounded-lg bg-primary-500/20 text-primary-400 hover:bg-primary-500/30 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                          >
+                            {isProcessing ? (
+                              <>
+                                <RefreshCw className="mr-1 h-3 w-3 animate-spin" />
+                                Processing
+                              </>
+                            ) : (
+                              <>
+                                <ArrowRight className="mr-1 h-3 w-3" />
+                                Pay Now
+                              </>
+                            )}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -749,5 +874,5 @@ export default function PayrollPage() {
         </div>
       </div>
     </Container>
-  )
+  );
 }
