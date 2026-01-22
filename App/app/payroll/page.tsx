@@ -15,6 +15,7 @@ import { CONTRACTS, TREASURY_ABI } from '@/config/contracts'
 import { getActivePayees, addPayee, createPaymentRequests, updateRevenueThreshold } from '@/lib/blockchain/treasury'
 import { getBalance } from '@/lib/blockchain/ethers-utils'
 import { x402Agent } from '@/lib/agent/x402-agent'
+import toast from 'react-hot-toast'
 
 interface PayeeForm {
   address: string
@@ -35,6 +36,7 @@ export default function PayrollPage() {
   const [error, setError] = useState<string>('')
   const [revenueThreshold, setRevenueThreshold] = useState<string>('10000')
   const [updatingThreshold, setUpdatingThreshold] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
 
   useEffect(() => {
     if (authenticated) {
@@ -51,19 +53,14 @@ export default function PayrollPage() {
       // Fetch active payees
       const payees = await getActivePayees()
       
-      // Filter out first two system payees and only show payees added by current user
-      // In a real app, you would track which payees were added by which user
-      const filteredPayees = payees.slice(2).filter(payee => 
-        payee.active // Only active payees
-      )
+      // Filter out first two system payees
+      const filteredPayees = payees.slice(2)
       
       setActivePayees(filteredPayees)
       
-      // Fetch payment requests from contract
-      // Note: This would require querying events in production
-      
     } catch (error) {
       console.error('Failed to fetch payroll data:', error)
+      toast.error('Failed to load payroll data')
       setError('Failed to load payroll data')
     } finally {
       setLoading(false)
@@ -88,7 +85,7 @@ export default function PayrollPage() {
       const balance = await usdcContract.balanceOf(CONTRACTS.TREASURY_MANAGER)
       setTreasuryBalance(ethers.formatUnits(balance, 6))
     } catch (error) {
-      console.error('Failed to fetch treasury threshold:', error)
+      console.error('Failed to fetch treasury balance:', error)
     }
   }
 
@@ -100,15 +97,32 @@ export default function PayrollPage() {
       const data = await response.json()
       if (data.success) {
         setIsRunning(data.data.status.isRunning || false)
+        setAutomationEnabled(data.data.status.isRunning || false)
       }
     } catch (error) {
       console.error('Failed to check agent status:', error)
     }
   }
 
+  const refreshData = async () => {
+    setRefreshing(true)
+    try {
+      await Promise.all([
+        fetchPayrollData(),
+        fetchUserBalance(),
+        checkAgentStatus()
+      ])
+      toast.success('Data refreshed successfully')
+    } catch (error) {
+      console.error('Failed to refresh data:', error)
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
   const triggerPayroll = async () => {
     if (!user) {
-      alert('Please connect your wallet')
+      toast.error('Please connect your wallet')
       return
     }
 
@@ -130,18 +144,97 @@ export default function PayrollPage() {
       const result = await createPaymentRequests(signer)
       
       if (result.success) {
-        alert('Payroll triggered successfully! Payment requests created and x402 challenges initiated.')
-        fetchPayrollData()
+        toast.success('Payment requests created successfully!')
         
-        // Manually trigger x402 agent to process payments
-        await x402Agent.manualTriggerPayroll()
+        // Process x402 payments for each request
+        if (result.requestIds && result.requestIds.length > 0) {
+          for (const requestId of result.requestIds) {
+            try {
+              // Get payment request details from contract
+              const ethers = await import('ethers')
+              const provider = new ethers.JsonRpcProvider('https://evm-t3.cronos.org')
+              const treasuryContract = new ethers.Contract(CONTRACTS.TREASURY_MANAGER, TREASURY_ABI, provider)
+              
+              const paymentRequest = await treasuryContract.getPaymentRequest(requestId)
+              const [payee, amount] = paymentRequest
+              
+              // Call x402 challenge API
+              const challengeResponse = await fetch(
+                `/api/x402/challenge?payee=${payee}&amount=${amount.toString()}&requestId=${requestId}`,
+                { method: 'GET' }
+              )
+              
+              if (challengeResponse.ok) {
+                const challenge = await challengeResponse.json()
+                
+                // Store challenge for processing
+                localStorage.setItem(`x402_challenge_${requestId}`, JSON.stringify(challenge))
+                
+                // Show x402 challenge to user
+                toast(
+                  <div>
+                    <p className="font-semibold">x402 Payment Challenge Created</p>
+                    <p className="text-sm mt-1">For payee: {payee.substring(0, 10)}...</p>
+                    <p className="text-sm">Amount: ${(Number(amount) / 1_000_000).toFixed(2)} USDC.e</p>
+                    <button
+                      onClick={() => {
+                        // In a real app, you would redirect to x402 payment page
+                        // or show a QR code with the challenge
+                        navigator.clipboard.writeText(JSON.stringify(challenge))
+                        toast.success('Challenge copied to clipboard')
+                      }}
+                      className="mt-2 px-3 py-1 text-sm bg-primary-500 rounded hover:bg-primary-600"
+                    >
+                      Copy Challenge
+                    </button>
+                  </div>,
+                  { duration: 8000 }
+                )
+                
+                // Auto-process with x402 facilitator (simulated)
+                setTimeout(async () => {
+                  try {
+                    // In a real implementation, you would send the challenge to x402 facilitator
+                    // For now, we'll simulate the process
+                    toast.loading(`Processing x402 payment for ${payee.substring(0, 10)}...`)
+                    
+                    // Simulate payment processing
+                    await new Promise(resolve => setTimeout(resolve, 3000))
+                    
+                    // Call settle endpoint (simulated)
+                    const settleResponse = await fetch('/api/x402/settle', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        paymentHeader: { version: 1, timestamp: Date.now() },
+                        paymentRequirements: challenge.accepts[0],
+                        userAddress: user.wallet?.address
+                      })
+                    })
+                    
+                    if (settleResponse.ok) {
+                      toast.success(`Payment settled for ${payee.substring(0, 10)}!`)
+                    }
+                  } catch (error) {
+                    console.error('Failed to process x402 payment:', error)
+                    toast.error('Failed to process x402 payment')
+                  }
+                }, 2000)
+              }
+            } catch (error) {
+              console.error(`Failed to create x402 challenge for request ${requestId}:`, error)
+            }
+          }
+        }
+        
+        fetchPayrollData()
       } else {
         throw new Error(result.error || 'Failed to trigger payroll')
       }
     } catch (error: any) {
       console.error('Failed to trigger payroll:', error)
       setError(error.message || 'Failed to trigger payroll')
-      alert(`Failed to trigger payroll: ${error.message || 'Unknown error'}`)
+      toast.error(`Failed to trigger payroll: ${error.message || 'Unknown error'}`)
     } finally {
       setLoading(false)
     }
@@ -161,24 +254,36 @@ export default function PayrollPage() {
       if (data.success) {
         setIsRunning(!isRunning)
         setAutomationEnabled(!isRunning)
-        alert(`Automation ${!isRunning ? 'started' : 'stopped'}`)
+        toast.success(`Automation ${!isRunning ? 'started' : 'stopped'}`)
       } else {
         throw new Error(data.error || 'Failed to toggle automation')
       }
     } catch (error: any) {
       console.error('Failed to toggle automation:', error)
-      alert(`Failed to toggle automation: ${error.message || 'Unknown error'}`)
+      toast.error(`Failed to toggle automation: ${error.message || 'Unknown error'}`)
     }
   }
 
   const handleAddPayee = async () => {
     if (!payeeForm.address || !payeeForm.salary) {
-      alert('Please fill in all fields')
+      toast.error('Please fill in all fields')
       return
     }
 
     if (!user) {
-      alert('Please connect your wallet')
+      toast.error('Please connect your wallet')
+      return
+    }
+
+    // Validate Ethereum address
+    if (!/^0x[a-fA-F0-9]{40}$/.test(payeeForm.address)) {
+      toast.error('Invalid Ethereum address')
+      return
+    }
+
+    // Validate salary
+    if (parseFloat(payeeForm.salary) <= 0) {
+      toast.error('Salary must be greater than 0')
       return
     }
 
@@ -193,31 +298,40 @@ export default function PayrollPage() {
       const ethersProvider = new ethers.BrowserProvider(provider)
       const signer = await ethersProvider.getSigner()
       
-      // Add payee
-      const success = await addPayee(signer, payeeForm.address, payeeForm.salary)
+      // Show loading toast
+      const loadingToast = toast.loading('Adding payee to blockchain...')
       
-      if (success) {
-        alert('Payee added successfully!')
+      // Add payee
+      const result = await addPayee(signer, payeeForm.address, payeeForm.salary)
+      
+      if (result.success) {
+        toast.dismiss(loadingToast)
+        toast.success('Payee added successfully!')
         setShowAddPayee(false)
         setPayeeForm({ address: '', salary: '' })
-        fetchPayrollData()
+        
+        // Refresh data to show new payee
+        setTimeout(() => {
+          fetchPayrollData()
+        }, 3000) // Wait for blockchain confirmation
       } else {
-        throw new Error('Failed to add payee')
+        toast.dismiss(loadingToast)
+        throw new Error(result.error || 'Failed to add payee')
       }
     } catch (error: any) {
       console.error('Error adding payee:', error)
-      alert(`Failed to add payee: ${error.message || 'Unknown error'}`)
+      toast.error(`Failed to add payee: ${error.message || 'Unknown error'}`)
     }
   }
 
   const handleUpdateThreshold = async () => {
     if (!revenueThreshold || parseFloat(revenueThreshold) <= 0) {
-      alert('Please enter a valid threshold amount')
+      toast.error('Please enter a valid threshold amount')
       return
     }
 
     if (!user) {
-      alert('Please connect your wallet')
+      toast.error('Please connect your wallet')
       return
     }
 
@@ -235,32 +349,47 @@ export default function PayrollPage() {
       const ethersProvider = new ethers.BrowserProvider(provider)
       const signer = await ethersProvider.getSigner()
       
+      const loadingToast = toast.loading('Updating revenue threshold...')
+      
       // Update revenue threshold
       const result = await updateRevenueThreshold(signer, revenueThreshold)
       
       if (result.success) {
-        alert('Revenue threshold updated successfully!')
+        toast.dismiss(loadingToast)
+        toast.success('Revenue threshold updated successfully!')
         fetchPayrollData()
       } else {
+        toast.dismiss(loadingToast)
         throw new Error(result.error || 'Failed to update threshold')
       }
     } catch (error: any) {
       console.error('Error updating threshold:', error)
       setError(error.message || 'Failed to update threshold')
-      alert(`Failed to update threshold: ${error.message || 'Unknown error'}`)
+      toast.error(`Failed to update threshold: ${error.message || 'Unknown error'}`)
     } finally {
       setUpdatingThreshold(false)
     }
   }
 
   const explainRevenueThreshold = () => {
-    alert(`Revenue Threshold Explanation:\n\n` +
-          `The revenue threshold determines when automated payroll will trigger.\n\n` +
-          `• When treasury balance exceeds this amount, the x402 agent will automatically check for due payments\n` +
-          `• If there are due payments, the agent creates x402 payment challenges\n` +
-          `• This prevents frequent small transactions and batches payments\n` +
-          `• Recommended: Set to 2-3x your monthly payroll amount\n\n` +
-          `Example: If monthly payroll is $5,000, set threshold to $10,000-$15,000`)
+    toast(
+      <div className="max-w-md">
+        <p className="font-semibold text-white mb-2">Revenue Threshold Explanation</p>
+        <p className="text-sm text-gray-300 mb-2">
+          The revenue threshold determines when automated payroll will trigger.
+        </p>
+        <ul className="text-sm text-gray-300 space-y-1">
+          <li>• When treasury balance exceeds this amount, x402 agent checks for due payments</li>
+          <li>• Creates x402 payment challenges for each due payee</li>
+          <li>• Prevents frequent small transactions (saves gas)</li>
+          <li>• Recommended: Set to 2-3x your monthly payroll amount</li>
+        </ul>
+        <p className="text-sm text-gray-300 mt-2">
+          Example: If monthly payroll is $5,000, set threshold to $10,000-$15,000
+        </p>
+      </div>,
+      { duration: 10000 }
+    )
   }
 
   if (!authenticated) {
@@ -289,10 +418,20 @@ export default function PayrollPage() {
         <div className="mb-8">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
             <div>
-              <h1 className="text-3xl font-bold text-white">Payroll Automation</h1>
+              <div className="flex items-center gap-3">
+                <h1 className="text-3xl font-bold text-white">Payroll Automation</h1>
+                <button
+                  onClick={refreshData}
+                  disabled={refreshing}
+                  className="p-2 hover:bg-gray-800 rounded-lg transition-colors"
+                  title="Refresh data"
+                >
+                  <RefreshCw className={`h-5 w-5 text-gray-400 ${refreshing ? 'animate-spin' : ''}`} />
+                </button>
+              </div>
               <p className="text-gray-400">Manage and automate x402-powered payments</p>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               {/* User Wallet Balance */}
               <div className="px-4 py-2 rounded-lg bg-surface border border-gray-700">
                 <div className="flex items-center gap-2">
@@ -340,6 +479,7 @@ export default function PayrollPage() {
                     placeholder="0x..."
                     className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500"
                   />
+                  <p className="text-xs text-gray-400 mt-1">Enter valid Ethereum address (0x...)</p>
                 </div>
                 
                 <div>
@@ -351,21 +491,24 @@ export default function PayrollPage() {
                     value={payeeForm.salary}
                     onChange={(e) => setPayeeForm({...payeeForm, salary: e.target.value})}
                     placeholder="1000"
+                    min="0"
+                    step="0.01"
                     className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500"
                   />
+                  <p className="text-xs text-gray-400 mt-1">Monthly salary in USDC.e (6 decimals)</p>
                 </div>
               </div>
               
               <div className="flex gap-3 mt-6">
                 <button
                   onClick={() => setShowAddPayee(false)}
-                  className="flex-1 py-2 rounded-lg bg-gray-800 text-gray-300 hover:bg-gray-700"
+                  className="flex-1 py-2 rounded-lg bg-gray-800 text-gray-300 hover:bg-gray-700 transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleAddPayee}
-                  className="flex-1 py-2 rounded-lg bg-primary-500 text-white hover:bg-primary-600"
+                  className="flex-1 py-2 rounded-lg bg-primary-500 text-white hover:bg-primary-600 transition-colors"
                 >
                   Add Payee
                 </button>
@@ -376,30 +519,32 @@ export default function PayrollPage() {
 
         {/* Automation Controls */}
         <div className="glass rounded-2xl p-6 mb-8">
-          <div className="flex flex-col md:flex-row justify-between items-center gap-6">
+          <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6">
             <div className="flex-1">
               <h2 className="text-xl font-semibold text-white mb-2">Automated Payroll</h2>
-              <p className="text-gray-400">
-                Start Automation: Enables the x402 agent to monitor revenue and automatically trigger payroll when conditions are met
-              </p>
-              <p className="text-gray-400 mt-2">
-                Run Payroll Now: Manually creates payment requests and initiates x402 payments immediately
-              </p>
-              <div className="flex items-center gap-2 mt-2">
+              <div className="space-y-2">
+                <p className="text-gray-400">
+                  <span className="text-primary-400 font-medium">Start Automation:</span> Enables the x402 agent to monitor revenue and automatically trigger payroll when conditions are met
+                </p>
+                <p className="text-gray-400">
+                  <span className="text-primary-400 font-medium">Run Payroll Now:</span> Manually creates payment requests and initiates x402 payments immediately
+                </p>
+              </div>
+              <div className="flex items-center gap-2 mt-3">
                 <div className={`w-2 h-2 rounded-full ${automationEnabled ? 'bg-green-400' : 'bg-gray-500'}`}></div>
                 <span className="text-sm text-gray-300">
                   {automationEnabled ? 'Automation active' : 'Automation paused'}
                 </span>
               </div>
             </div>
-            <div className="flex items-center gap-4">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto">
               <button
                 onClick={toggleAutomation}
-                className={`px-6 py-3 rounded-lg font-semibold flex items-center gap-2 ${
+                className={`px-4 py-3 rounded-lg font-semibold flex items-center justify-center gap-2 ${
                   isRunning 
-                    ? 'bg-error/20 text-error border border-error/30' 
-                    : 'bg-success/20 text-success border border-success/30'
-                }`}
+                    ? 'bg-error/20 text-error border border-error/30 hover:bg-error/30' 
+                    : 'bg-success/20 text-success border border-success/30 hover:bg-success/30'
+                } transition-colors`}
               >
                 {isRunning ? (
                   <>
@@ -417,7 +562,7 @@ export default function PayrollPage() {
               <button
                 onClick={triggerPayroll}
                 disabled={loading}
-                className="px-6 py-3 rounded-lg bg-gradient-to-r from-primary-500 to-primary-600 text-white font-semibold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                className="px-4 py-3 rounded-lg bg-gradient-to-r from-primary-500 to-primary-600 text-white font-semibold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-all"
               >
                 {loading ? (
                   <>
@@ -434,7 +579,7 @@ export default function PayrollPage() {
               
               <button
                 onClick={() => setShowAddPayee(true)}
-                className="px-6 py-3 rounded-lg bg-gradient-to-r from-secondary-500 to-secondary-600 text-white font-semibold hover:opacity-90 flex items-center gap-2"
+                className="px-4 py-3 rounded-lg bg-gradient-to-r from-secondary-500 to-secondary-600 text-white font-semibold hover:opacity-90 flex items-center justify-center gap-2 transition-all"
               >
                 <Plus className="h-5 w-5" />
                 Add Payee
@@ -445,7 +590,12 @@ export default function PayrollPage() {
 
         {/* Active Payees */}
         <div className="glass rounded-2xl p-6 mb-8">
-          <h2 className="text-xl font-semibold text-white mb-4">Active Payees</h2>
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
+            <h2 className="text-xl font-semibold text-white">Active Payees</h2>
+            <div className="text-sm text-gray-400">
+              {activePayees.length} payee(s) • Excludes system payees
+            </div>
+          </div>
           {loading ? (
             <div className="text-center py-8">
               <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500"></div>
@@ -460,7 +610,7 @@ export default function PayrollPage() {
               <p className="text-gray-400 mb-4">Add payees to start managing payroll</p>
               <button
                 onClick={() => setShowAddPayee(true)}
-                className="px-4 py-2 rounded-lg bg-primary-500 text-white hover:bg-primary-600"
+                className="px-4 py-2 rounded-lg bg-primary-500 text-white hover:bg-primary-600 transition-colors"
               >
                 Add Your First Payee
               </button>
@@ -471,9 +621,9 @@ export default function PayrollPage() {
                 <thead className="bg-gray-900/50">
                   <tr>
                     <th className="text-left p-3 text-gray-300 font-medium">Address</th>
-                    <th className="text-left p-3 text-gray-300 font-medium">Monthly Salary</th>
-                    <th className="text-left p-3 text-gray-300 font-medium">Last Payment</th>
-                    <th className="text-left p-3 text-gray-300 font-medium">Accrued</th>
+                    <th className="text-left p-3 text-gray-300 font-medium hidden md:table-cell">Salary</th>
+                    <th className="text-left p-3 text-gray-300 font-medium">Last Paid</th>
+                    <th className="text-left p-3 text-gray-300 font-medium hidden lg:table-cell">Accrued</th>
                     <th className="text-left p-3 text-gray-300 font-medium">Status</th>
                   </tr>
                 </thead>
@@ -494,17 +644,18 @@ export default function PayrollPage() {
                           View
                         </a>
                       </td>
-                      <td className="p-3">
+                      <td className="p-3 hidden md:table-cell">
                         <div className="font-semibold text-white">
                           ${(Number(payee.salary) / 1_000_000).toFixed(2)} USDC.e
                         </div>
+                        <div className="text-xs text-gray-400">Monthly</div>
                       </td>
                       <td className="p-3">
                         <div className="text-gray-300">
                           {payee.lastPayment.toLocaleDateString()}
                         </div>
                       </td>
-                      <td className="p-3">
+                      <td className="p-3 hidden lg:table-cell">
                         <div className="text-gray-300">
                           ${(Number(payee.accrued) / 1_000_000).toFixed(2)} USDC.e
                         </div>
@@ -534,7 +685,8 @@ export default function PayrollPage() {
             <h2 className="text-xl font-semibold text-white">Revenue Threshold Settings</h2>
             <button
               onClick={explainRevenueThreshold}
-              className="p-2 text-gray-400 hover:text-white"
+              className="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 transition-colors"
+              title="Explain Revenue Threshold"
             >
               <Info className="h-5 w-5" />
             </button>
@@ -545,18 +697,20 @@ export default function PayrollPage() {
               <label className="block text-sm font-medium text-gray-300 mb-2">
                 Minimum Revenue to Trigger Payroll (USDC.e)
               </label>
-              <div className="flex gap-3">
+              <div className="flex flex-col sm:flex-row gap-3">
                 <input
                   type="number"
                   value={revenueThreshold}
                   onChange={(e) => setRevenueThreshold(e.target.value)}
                   placeholder="10000"
+                  min="0"
+                  step="100"
                   className="flex-1 px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white"
                 />
                 <button
                   onClick={handleUpdateThreshold}
                   disabled={updatingThreshold}
-                  className="px-6 py-2 rounded-lg bg-primary-500 text-white hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                  className="px-6 py-2 rounded-lg bg-primary-500 text-white hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors min-w-[120px]"
                 >
                   {updatingThreshold ? (
                     <>

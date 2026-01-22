@@ -485,86 +485,86 @@ export default function DashboardPage() {
           />
         </div>
 
-        {/* Actions */}
-        <div className="mb-8 p-6 bg-black/40 backdrop-blur-sm rounded-2xl border border-gray-800">
-          <div className="flex flex-col md:flex-row justify-between items-center gap-4">
-            <div>
-              <h3 className="text-xl font-semibold text-white mb-2">Payroll Automation</h3>
-              <p className="text-gray-400">
-                Run Payroll button creates payment requests and initiates x402 payment challenges
-              </p>
-              <div className="flex items-center gap-2 mt-2">
-                <div className="text-xs text-gray-400">Revenue Threshold:</div>
-                <div className="text-sm font-semibold text-white">
-                  ${formattedRevenueThreshold.toFixed(2)} USDC.e
-                </div>
-                <a
-                  href={`https://explorer.cronos.org/testnet/address/${CONTRACTS.TREASURY_MANAGER}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-primary-400 hover:text-primary-300 text-xs flex items-center gap-1"
-                >
-                  <ExternalLink className="h-3 w-3" />
-                  View Contract
-                </a>
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-3">
-              <button
-                onClick={triggerPayroll}
-                disabled={payrollLoading || duePayeesCount === 0}
-                className="px-6 py-3 rounded-lg bg-gradient-to-r from-primary-500 to-primary-600 text-white font-semibold hover:from-primary-600 hover:to-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
-              >
-                {payrollLoading ? (
-                  <>
-                    <div className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                    Processing...
-                  </>
-                ) : (
-                  <>
-                    <Play className="h-4 w-4" />
-                    Run Payroll (x402)
-                  </>
-                )}
-              </button>
-              
-              <button
-                onClick={addPayee}
-                className="px-6 py-3 rounded-lg bg-gradient-to-r from-secondary-500 to-secondary-600 text-white font-semibold hover:from-secondary-600 hover:to-secondary-700 transition-all flex items-center gap-2"
-              >
-                <Plus className="h-4 w-4" />
-                Add Payee
-              </button>
-              
-              <button
-                onClick={() => router.push('/fund')}
-                className="px-6 py-3 rounded-lg bg-gray-800 border border-gray-700 text-gray-300 font-semibold hover:bg-gray-700 hover:text-white transition-colors"
-              >
-                Fund Treasury
-              </button>
-            </div>
-          </div>
-          
-          {/* Due Payments Alert */}
-          {duePayeesCount > 0 && (
-            <div className="mt-4 p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center">
-                  <Bell className="h-5 w-5 text-yellow-500 mr-2" />
-                  <div className="text-yellow-500">
-                    <span className="font-semibold">{duePayeesCount} payee(s)</span> have payments due. Run payroll to process.
-                  </div>
-                </div>
-                <button
-                  onClick={triggerPayroll}
-                  className="px-3 py-1 text-sm bg-yellow-500 text-white rounded-lg hover:bg-yellow-600"
-                >
-                  Pay Now
-                </button>
-              </div>
-            </div>
-          )}
+{/* Actions - Fixed for responsive layout */}
+<div className="mb-8 p-6 bg-black/40 backdrop-blur-sm rounded-2xl border border-gray-800">
+  <div className="flex flex-col lg:flex-row justify-between items-center gap-6">
+    <div className="flex-1">
+      <h3 className="text-xl font-semibold text-white mb-2">Payroll Automation</h3>
+      <p className="text-gray-400">
+        Run Payroll button creates payment requests and initiates x402 payment challenges
+      </p>
+      <div className="flex items-center gap-2 mt-2">
+        <div className="text-xs text-gray-400">Revenue Threshold:</div>
+        <div className="text-sm font-semibold text-white">
+          ${formattedRevenueThreshold.toFixed(2)} USDC.e
         </div>
+        <a
+          href={`https://explorer.cronos.org/testnet/address/${CONTRACTS.TREASURY_MANAGER}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-primary-400 hover:text-primary-300 text-xs flex items-center gap-1"
+        >
+          <ExternalLink className="h-3 w-3" />
+          View Contract
+        </a>
+      </div>
+    </div>
+    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto">
+      <button
+        onClick={triggerPayroll}
+        disabled={payrollLoading || duePayeesCount === 0}
+        className="px-4 py-3 rounded-lg bg-gradient-to-r from-primary-500 to-primary-600 text-white font-semibold hover:from-primary-600 hover:to-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+      >
+        {payrollLoading ? (
+          <>
+            <div className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+            Processing...
+          </>
+        ) : (
+          <>
+            <Play className="h-4 w-4" />
+            Run Payroll (x402)
+          </>
+        )}
+      </button>
+      
+      <button
+        onClick={addPayee}
+        className="px-4 py-3 rounded-lg bg-gradient-to-r from-secondary-500 to-secondary-600 text-white font-semibold hover:from-secondary-600 hover:to-secondary-700 transition-all flex items-center justify-center gap-2"
+      >
+        <Plus className="h-4 w-4" />
+        Add Payee
+      </button>
+      
+      <button
+        onClick={() => router.push('/fund')}
+        className="px-4 py-3 rounded-lg bg-gray-800 border border-gray-700 text-gray-300 font-semibold hover:bg-gray-700 hover:text-white transition-colors"
+      >
+        Fund Treasury
+      </button>
+    </div>
+  </div>
+  
+  {/* Due Payments Alert */}
+  {duePayeesCount > 0 && (
+    <div className="mt-4 p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+      <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+        <div className="flex items-center">
+          <Bell className="h-5 w-5 text-yellow-500 mr-2" />
+          <div className="text-yellow-500">
+            <span className="font-semibold">{duePayeesCount} payee(s)</span> have payments due. Run payroll to process.
+          </div>
+        </div>
+        <button
+          onClick={triggerPayroll}
+          className="px-4 py-2 text-sm bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 whitespace-nowrap"
+        >
+          Pay Now
+        </button>
+      </div>
+    </div>
+  )}
+</div>
 
         {/* Payees Table */}
         <div className="bg-black/40 backdrop-blur-sm rounded-2xl border border-gray-800 overflow-hidden">
