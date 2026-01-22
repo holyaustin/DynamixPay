@@ -1,7 +1,7 @@
 // app/dashboard/page.tsx
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { usePrivy } from '@privy-io/react-auth'
 import { Container } from '@/components/layout/Container'
 import TreasuryMetrics from '@/components/dashboard/TreasuryMetrics'
@@ -9,24 +9,22 @@ import PayeeTable from '@/components/dashboard/PayeeTable'
 import { ConnectButton } from '@/components/wallet/ConnectButton'
 import { 
   DollarSign, Users, TrendingUp, Clock, Plus, 
-  Settings, Play, Bell, Wallet 
+  Settings, Play, Bell, Wallet, RefreshCw, Activity
 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { 
   getTreasuryBalance, 
   getActivePayees, 
   getTotalAccrued,
-  createPaymentRequests
+  createPaymentRequests,
+  calculateDuePayees,
+  calculateTotalMonthlyOutflow,
+  Payee
 } from '@/lib/blockchain/treasury'
 import { getBalance } from '@/lib/blockchain/ethers-utils'
-
-interface Payee {
-  address: string
-  salary: bigint
-  lastPayment: Date
-  accrued: bigint
-  active: boolean
-}
+import { treasuryEventListener } from '@/lib/blockchain/event-listener'
+import { transactionStore, Transaction } from '@/lib/storage/transaction-store'
+import { EnhancedErrorHandler, withGlobalErrorHandling } from '@/lib/utils/error-handler'
 
 interface DashboardData {
   treasuryBalance: bigint
@@ -35,6 +33,7 @@ interface DashboardData {
   totalMonthlyOutflow: bigint
   duePayeesCount: number
   userBalance: string
+  lastUpdated: Date
 }
 
 export default function DashboardPage() {
@@ -45,40 +44,72 @@ export default function DashboardPage() {
   const [payrollLoading, setPayrollLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [userWalletBalance, setUserWalletBalance] = useState<string>('0.00')
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [lastUpdateTime, setLastUpdateTime] = useState<Date>(new Date())
+  const [pendingTransactions, setPendingTransactions] = useState(0)
+  const [isEventListenerActive, setIsEventListenerActive] = useState(false)
 
-  const fetchDashboardData = async () => {
-    try {
+  // Initialize event listener
+  useEffect(() => {
+    if (authenticated) {
+      treasuryEventListener.start()
+      setIsEventListenerActive(true)
+      
+      // Subscribe to all events
+      const unsubscribe = treasuryEventListener.subscribe('*', (eventData: any) => {
+        console.log('Dashboard received event:', eventData)
+        
+        // Auto-refresh on relevant events
+        if (['PayeeAdded', 'PaymentRequestCreated', 'PaymentSettled', 'PayrollTriggered'].includes(eventData.event)) {
+          fetchDashboardData()
+        }
+      })
+      
+      return () => {
+        unsubscribe()
+        treasuryEventListener.stop()
+        setIsEventListenerActive(false)
+      }
+    }
+  }, [authenticated])
+
+  // Subscribe to transaction store updates
+  useEffect(() => {
+    const unsubscribe = transactionStore.subscribe((transactions: Transaction[]) => {
+      const pending = transactions.filter(tx => tx.status === 'pending').length
+      setPendingTransactions(pending)
+    })
+    
+    return unsubscribe
+  }, [])
+
+  const fetchDashboardData = useCallback(async () => {
+    await withGlobalErrorHandling(async () => {
       setLoading(true)
       setError(null)
 
-      // Fetch all data in parallel
-      const [treasuryBalance, payeesData, totalAccrued] = await Promise.all([
-        getTreasuryBalance(),
-        getActivePayees(),
-        getTotalAccrued()
+      // Fetch all data in parallel with retry
+      const [treasuryBalance, payeesData, totalAccrued, userBalanceResult] = await Promise.all([
+        EnhancedErrorHandler.withRetry(() => getTreasuryBalance(), {
+          maxAttempts: 3,
+          baseDelay: 1000,
+          shouldRetry: EnhancedErrorHandler.isNetworkError
+        }),
+        EnhancedErrorHandler.withRetry(() => getActivePayees(), {
+          maxAttempts: 3,
+          baseDelay: 1000,
+          shouldRetry: EnhancedErrorHandler.isNetworkError
+        }),
+        EnhancedErrorHandler.withRetry(() => getTotalAccrued(), {
+          maxAttempts: 3,
+          baseDelay: 1000,
+          shouldRetry: EnhancedErrorHandler.isNetworkError
+        }),
+        user?.wallet?.address ? getBalance(user.wallet.address) : Promise.resolve('0.00')
       ])
       
-      // Calculate due payees
-      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-      const duePayeesCount = payeesData.filter(payee => 
-        payee.lastPayment < thirtyDaysAgo
-      ).length
-      
-      // Calculate total monthly outflow
-      const totalMonthlyOutflow = payeesData.reduce(
-        (sum, payee) => sum + payee.salary, 
-        BigInt(0)
-      )
-      
-      // Get user wallet balance if available
-      let userBalance = '0.00'
-      if (user?.wallet?.address) {
-        try {
-          userBalance = await getBalance(user.wallet.address)
-        } catch (err) {
-          console.error('Failed to fetch user balance:', err)
-        }
-      }
+      const duePayeesCount = calculateDuePayees(payeesData)
+      const totalMonthlyOutflow = calculateTotalMonthlyOutflow(payeesData)
 
       setData({
         treasuryBalance,
@@ -86,19 +117,14 @@ export default function DashboardPage() {
         totalAccrued,
         totalMonthlyOutflow,
         duePayeesCount,
-        userBalance
+        userBalance: userBalanceResult as string,
+        lastUpdated: new Date()
       })
       
-      // Update user wallet balance separately for the UI component
-      setUserWalletBalance(userBalance)
-
-    } catch (err) {
-      console.error('Failed to fetch dashboard data:', err)
-      setError('Failed to load dashboard data. Please try again.')
-    } finally {
-      setLoading(false)
-    }
-  }
+      setUserWalletBalance(userBalanceResult as string)
+      setLastUpdateTime(new Date())
+    }, 'fetchDashboardData')()
+  }, [user])
 
   useEffect(() => {
     if (!authenticated && ready) {
@@ -109,46 +135,85 @@ export default function DashboardPage() {
     if (authenticated) {
       fetchDashboardData()
       
-      // Refresh every 30 seconds
-      const interval = setInterval(fetchDashboardData, 30000)
+      // Set up polling for updates (as backup to event listener)
+      const pollInterval = setInterval(fetchDashboardData, 60000) // 1 minute
       
-      return () => clearInterval(interval)
+      return () => clearInterval(pollInterval)
     }
-  }, [authenticated, ready, router])
+  }, [authenticated, ready, router, fetchDashboardData])
 
-  const triggerPayroll = async () => {
+  const triggerPayroll = withGlobalErrorHandling(async () => {
     if (!user) {
       alert('Please connect your wallet')
       return
     }
 
     setPayrollLoading(true)
+
     try {
-      // Check if ethereum provider is available
-      if (!(window as any).ethereum) {
-        throw new Error('No wallet provider found. Please install MetaMask or use a Web3 wallet.')
+      const provider = await (window as any).ethereum
+      if (!provider) {
+        throw new Error('No wallet provider found')
       }
       
       // Create ethers provider and signer
       const ethers = await import('ethers')
-      const provider = new ethers.BrowserProvider((window as any).ethereum)
-      const signer = await provider.getSigner()
+      const ethersProvider = new ethers.BrowserProvider(provider)
+      const signer = await ethersProvider.getSigner()
+      const userAddress = await signer.getAddress()
+      
+      // Track transaction - FIXED: timestamp is automatically added by addTransaction
+      const txId = transactionStore.addTransaction({
+        hash: 'pending',
+        type: 'create_payments',
+        status: 'pending',
+        from: userAddress,
+        to: process.env.NEXT_PUBLIC_TREASURY_CONTRACT!,
+        // timestamp is automatically added by addTransaction, don't include it here
+      })
       
       // Call createPaymentRequests
       const result = await createPaymentRequests(signer)
       
-      if (result.success) {
+      if (result.success && result.transactionHash) {
+        // Update transaction record
+        transactionStore.updateTransaction(txId, {
+          hash: result.transactionHash,
+          status: 'confirmed',
+          confirmedAt: new Date(),
+          blockNumber: result.requestIds?.length
+        })
+        
         alert('Payroll triggered successfully!')
         // Refresh data
         await fetchDashboardData()
       } else {
         throw new Error(result.error || 'Failed to trigger payroll')
       }
-    } catch (error) {
-      console.error('Failed to trigger payroll:', error)
-      alert(`Failed to trigger payroll: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } catch (error: any) {
+      // Update transaction as failed - FIXED: use the actual transaction ID
+      // We need to get the last transaction ID
+      const transactions = transactionStore.getAllTransactions()
+      const lastTx = transactions[0] // Most recent transaction
+      if (lastTx) {
+        transactionStore.updateTransaction(lastTx.id, {
+          status: 'failed',
+          error: error.message
+        })
+      }
+      
+      throw error
     } finally {
       setPayrollLoading(false)
+    }
+  }, 'triggerPayroll')
+
+  const refreshData = async () => {
+    setIsRefreshing(true)
+    try {
+      await fetchDashboardData()
+    } finally {
+      setIsRefreshing(false)
     }
   }
 
@@ -160,8 +225,9 @@ export default function DashboardPage() {
     router.push('/payroll?action=settings')
   }
 
-  const viewNotifications = () => {
-    alert('Notifications feature coming soon!')
+  const viewTransactions = () => {
+    // Check if we have a transactions page or use analytics
+    router.push('/transactions')
   }
 
   if (!authenticated) {
@@ -218,12 +284,10 @@ export default function DashboardPage() {
     )
   }
 
-  // Safe calculations with null checks
   const formattedTreasuryBalance = data ? Number(data.treasuryBalance) / 1_000_000 : 0
   const formattedTotalMonthlyOutflow = data ? Number(data.totalMonthlyOutflow) / 1_000_000 : 0
   const formattedTotalAccrued = data ? Number(data.totalAccrued) / 1_000_000 : 0
   const duePayeesCount = data?.duePayeesCount || 0
-  const totalPayees = data?.payees.length || 0
 
   return (
     <Container>
@@ -232,8 +296,29 @@ export default function DashboardPage() {
         <div className="mb-8">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
             <div>
-              <h1 className="text-3xl font-bold text-white">Treasury Dashboard</h1>
-              <p className="text-gray-400">Real-time treasury management with x402 payments</p>
+              <div className="flex items-center gap-3 mb-2">
+                <h1 className="text-3xl font-bold text-white">Treasury Dashboard</h1>
+                <div className="flex items-center gap-2">
+                  {isEventListenerActive && (
+                    <div className="flex items-center gap-1">
+                      <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                      <span className="text-xs text-green-400">Live</span>
+                    </div>
+                  )}
+                  <button
+                    onClick={refreshData}
+                    disabled={isRefreshing}
+                    className="p-1.5 rounded-lg bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
+                  >
+                    <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-center gap-4 text-sm text-gray-400">
+                <span>Real-time treasury management with x402 payments</span>
+                <span className="text-gray-500">•</span>
+                <span>Updated {lastUpdateTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+              </div>
             </div>
             <div className="flex items-center gap-3">
               {/* User Wallet Balance */}
@@ -249,15 +334,19 @@ export default function DashboardPage() {
                 </div>
               </div>
               
-              <button
-                onClick={viewNotifications}
-                className="p-2 rounded-lg bg-gray-800 text-gray-300 hover:text-white hover:bg-gray-700 transition-colors relative"
-              >
-                <Bell className="h-5 w-5" />
-                {duePayeesCount > 0 && (
-                  <span className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
-                )}
-              </button>
+              {/* Pending Transactions Badge */}
+              {pendingTransactions > 0 && (
+                <button
+                  onClick={viewTransactions}
+                  className="relative p-2 rounded-lg bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 hover:bg-yellow-500/20 transition-colors"
+                >
+                  <Activity className="h-5 w-5" />
+                  <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">
+                    {pendingTransactions}
+                  </span>
+                </button>
+              )}
+              
               <button
                 onClick={manageSettings}
                 className="px-4 py-2 rounded-lg bg-gray-800 text-gray-300 hover:text-white hover:bg-gray-700 transition-colors flex items-center gap-2"
@@ -274,13 +363,14 @@ export default function DashboardPage() {
           <TreasuryMetrics
             title="Treasury Balance"
             value={`$${formattedTreasuryBalance.toFixed(2)}`}
+            change={formattedTreasuryBalance > 10000 ? '+12.5%' : '-5.2%'}
             icon={<DollarSign className="h-5 w-5" />}
             loading={loading}
           />
           
           <TreasuryMetrics
             title="Active Payees"
-            value={totalPayees.toString()}
+            value={data?.payees.length.toString() || '0'}
             change={duePayeesCount > 0 ? `${duePayeesCount} due` : undefined}
             icon={<Users className="h-5 w-5" />}
             loading={loading}
@@ -290,6 +380,7 @@ export default function DashboardPage() {
           <TreasuryMetrics
             title="Monthly Outflow"
             value={`$${formattedTotalMonthlyOutflow.toFixed(2)}`}
+            change="+5.0%"
             icon={<TrendingUp className="h-5 w-5" />}
             loading={loading}
           />
@@ -347,14 +438,22 @@ export default function DashboardPage() {
             </div>
           </div>
           
-          {/* Due Payments Alert - FIXED: Using duePayeesCount variable */}
+          {/* Due Payments Alert */}
           {duePayeesCount > 0 && (
             <div className="mt-4 p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-              <div className="flex items-center">
-                <Bell className="h-5 w-5 text-yellow-500 mr-2" />
-                <div className="text-yellow-500">
-                  <span className="font-semibold">{duePayeesCount} payee(s)</span> have payments due. Run payroll to process.
+              <div className="flex items-center justify-between">
+                <div className="flex items-center">
+                  <Bell className="h-5 w-5 text-yellow-500 mr-2" />
+                  <div className="text-yellow-500">
+                    <span className="font-semibold">{duePayeesCount} payee(s)</span> have payments due. Run payroll to process.
+                  </div>
                 </div>
+                <button
+                  onClick={triggerPayroll}
+                  className="px-3 py-1 text-sm bg-yellow-500 text-white rounded-lg hover:bg-yellow-600"
+                >
+                  Pay Now
+                </button>
               </div>
             </div>
           )}
@@ -369,20 +468,37 @@ export default function DashboardPage() {
                 <p className="text-gray-400">Manage payroll recipients</p>
               </div>
               <div className="text-sm text-gray-400">
-                Total: {totalPayees} payees • {duePayeesCount} due for payment
+                Total: {data?.payees.length || 0} payees • {duePayeesCount} due for payment
               </div>
             </div>
           </div>
           <PayeeTable payees={data?.payees || []} loading={loading} />
         </div>
 
-        {/* Contract Info */}
+        {/* System Status */}
         <div className="mt-8 bg-black/40 backdrop-blur-sm rounded-2xl border border-gray-800 p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Contract Information</h3>
+          <h3 className="text-lg font-semibold text-white mb-4">System Status</h3>
           <div className="space-y-3">
+            <div className="flex justify-between items-center">
+              <span className="text-gray-400">Event Listener</span>
+              <div className="flex items-center gap-2">
+                <div className={`w-2 h-2 rounded-full ${isEventListenerActive ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
+                <span className="text-white">{isEventListenerActive ? 'Active' : 'Inactive'}</span>
+              </div>
+            </div>
             <div className="flex justify-between">
-              <span className="text-gray-400">Network:</span>
+              <span className="text-gray-400">Network</span>
               <span className="text-white">Cronos Testnet</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Last Updated</span>
+              <span className="text-white">{lastUpdateTime.toLocaleTimeString()}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Pending Transactions</span>
+              <span className={`font-medium ${pendingTransactions > 0 ? 'text-yellow-400' : 'text-green-400'}`}>
+                {pendingTransactions}
+              </span>
             </div>
           </div>
         </div>

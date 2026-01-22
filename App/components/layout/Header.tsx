@@ -5,7 +5,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import Image from 'next/image';
 import { usePathname, useRouter } from 'next/navigation'
-import { Menu, X, Wallet, Home, Users, BarChart, DollarSign } from 'lucide-react'
+import { Menu, X, Wallet, Home, Users, BarChart, Clock,  DollarSign } from 'lucide-react'
 import { usePrivy } from '@privy-io/react-auth'
 import { ConnectButton } from '@/components/wallet/ConnectButton'
 import { Container } from '@/components/layout/Container'
@@ -15,6 +15,7 @@ const navigation = [
   { name: 'Payroll', href: '/payroll', icon: Users },
   { name: 'Analytics', href: '/analytics', icon: BarChart },
   { name: 'Fund', href: '/fund', icon: DollarSign },
+  { name: 'Transactions', href: '/transactions', icon: Clock }, 
 ]
 
 export function Header() {
