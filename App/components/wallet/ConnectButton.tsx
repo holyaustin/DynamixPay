@@ -2,34 +2,49 @@
 'use client'
 
 import { usePrivy, useWallets } from '@privy-io/react-auth'
-import { useAccount, useDisconnect } from 'wagmi'
-import { ChevronDown, LogOut, Copy, Check } from 'lucide-react'
-import { useState } from 'react'
+import { ChevronDown, LogOut, Copy, Check, User } from 'lucide-react'
+import { useState, useEffect } from 'react'
 import { formatAddress } from '@/lib/utils/format'
+import { getBalance } from '@/lib/blockchain/ethers-utils'
 
 export function ConnectButton() {
   const { login, logout, authenticated, user } = usePrivy()
-  const { address } = useAccount()
-  const { disconnect } = useDisconnect()
   const { wallets } = useWallets()
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [userBalance, setUserBalance] = useState<string>('0.00')
+
+  useEffect(() => {
+    if (user?.wallet?.address) {
+      fetchUserBalance()
+    }
+  }, [user])
+
+  const fetchUserBalance = async () => {
+    if (user?.wallet?.address) {
+      try {
+        const balance = await getBalance(user.wallet.address)
+        setUserBalance(balance)
+      } catch (error) {
+        console.error('Failed to fetch user balance:', error)
+      }
+    }
+  }
 
   const handleCopy = () => {
-    if (address) {
-      navigator.clipboard.writeText(address)
+    if (user?.wallet?.address) {
+      navigator.clipboard.writeText(user.wallet.address)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     }
   }
 
   const handleDisconnect = async () => {
-    await disconnect()
     await logout()
     setIsDropdownOpen(false)
   }
 
-  if (!authenticated || !address) {
+  if (!authenticated || !user?.wallet?.address) {
     return (
       <button
         onClick={() => login()}
@@ -40,6 +55,12 @@ export function ConnectButton() {
     )
   }
 
+  // Get user name from social login or email
+  const userName = user?.twitter?.username || 
+                   user?.google?.name || 
+                   user?.email?.address?.split('@')[0] || 
+                   'User'
+
   return (
     <div className="relative">
       <button
@@ -47,16 +68,31 @@ export function ConnectButton() {
         className="inline-flex items-center px-4 py-2 rounded-lg bg-surface border border-gray-700 text-white font-medium hover:bg-gray-800 transition-colors"
       >
         <div className="w-2 h-2 rounded-full bg-green-400 mr-2"></div>
-        <span className="font-mono text-sm">{formatAddress(address)}</span>
+        <div className="flex flex-col items-start">
+          <span className="font-medium text-sm">{userName}</span>
+          <span className="font-mono text-xs text-gray-300">
+            {formatAddress(user.wallet.address)}
+          </span>
+        </div>
         <ChevronDown className="ml-2 h-4 w-4" />
       </button>
 
       {isDropdownOpen && (
-        <div className="absolute right-0 mt-2 w-48 rounded-lg bg-surface border border-gray-700 shadow-xl z-50 animate-slide-up">
+        <div className="absolute right-0 mt-2 w-64 rounded-lg bg-surface border border-gray-700 shadow-xl z-50 animate-slide-up">
           <div className="p-3 border-b border-gray-700">
-            <div className="text-xs text-gray-400 mb-1">Connected with Privy</div>
-            <div className="font-mono text-sm text-white truncate">
-              {formatAddress(address)}
+            <div className="flex items-center space-x-3">
+              <div className="w-10 h-10 rounded-full bg-primary-500/20 flex items-center justify-center">
+                <User className="h-5 w-5 text-primary-400" />
+              </div>
+              <div>
+                <div className="font-medium text-white">{userName}</div>
+                <div className="font-mono text-xs text-gray-300 truncate max-w-[160px]">
+                  {user.wallet.address}
+                </div>
+                <div className="text-sm text-green-400 mt-1">
+                  {userBalance} USDC
+                </div>
+              </div>
             </div>
           </div>
           

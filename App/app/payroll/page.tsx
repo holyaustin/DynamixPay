@@ -7,85 +7,181 @@ import { Container } from '@/components/layout/Container'
 import { ConnectButton } from '@/components/wallet/ConnectButton'
 import { 
   DollarSign, Users, Clock, CheckCircle, 
-  AlertCircle, Play, Pause, RefreshCw 
+  AlertCircle, Play, Pause, RefreshCw,
+  Plus, Settings, Wallet
 } from 'lucide-react'
+import { CONTRACTS, TREASURY_ABI } from '@/config/contracts'
+import { getActivePayees, addPayee, createPaymentRequests } from '@/lib/blockchain/treasury'
+import { getBalance } from '@/lib/blockchain/ethers-utils'
 
-interface PaymentRequest {
-  id: number
-  payee: string
-  amount: string
-  status: 'pending' | 'processing' | 'completed' | 'failed'
-  date: string
-  txHash?: string
+interface PayeeForm {
+  address: string
+  salary: string
 }
 
 export default function PayrollPage() {
   const { authenticated, user } = usePrivy()
-  const [paymentRequests, setPaymentRequests] = useState<PaymentRequest[]>([])
+  const [paymentRequests, setPaymentRequests] = useState<any[]>([])
   const [isRunning, setIsRunning] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [showAddPayee, setShowAddPayee] = useState(false)
+  const [payeeForm, setPayeeForm] = useState<PayeeForm>({ address: '', salary: '' })
+  const [activePayees, setActivePayees] = useState<any[]>([])
+  const [automationEnabled, setAutomationEnabled] = useState(false)
+  const [userWalletBalance, setUserWalletBalance] = useState<string>('0.00')
+  const [treasuryBalance, setTreasuryBalance] = useState<string>('0.00')
+  const [error, setError] = useState<string>('')
 
   useEffect(() => {
     if (authenticated) {
-      fetchPaymentRequests()
+      fetchPayrollData()
+      fetchUserBalance()
     }
   }, [authenticated])
 
-  const fetchPaymentRequests = async () => {
+  const fetchPayrollData = async () => {
     try {
-      // This would fetch from your API
-      const mockData: PaymentRequest[] = [
-        {
-          id: 1,
-          payee: '0x742d35Cc6634C0532925a3b844Bc9e...',
-          amount: '2500.00',
-          status: 'pending',
-          date: '2024-01-15',
-        },
-        {
-          id: 2,
-          payee: '0x742d35Cc6634C0532925a3b844Bc9e...',
-          amount: '1800.00',
-          status: 'completed',
-          date: '2024-01-14',
-          txHash: '0xabc...123'
-        },
-      ]
-      setPaymentRequests(mockData)
+      setLoading(true)
+      
+      // Fetch active payees
+      const payees = await getActivePayees()
+      setActivePayees(payees)
+      
+      // Fetch payment requests from contract
+      // Note: This would require querying events in production
+      
     } catch (error) {
-      console.error('Failed to fetch payment requests:', error)
+      console.error('Failed to fetch payroll data:', error)
+      setError('Failed to load payroll data')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const fetchUserBalance = async () => {
+    if (user?.wallet?.address) {
+      try {
+        const balance = await getBalance(user.wallet.address)
+        setUserWalletBalance(balance)
+      } catch (error) {
+        console.error('Failed to fetch user balance:', error)
+      }
+    }
+    
+    // Fetch treasury balance
+    try {
+      const ethers = await import('ethers')
+      const provider = new ethers.JsonRpcProvider('https://evm-t3.cronos.org')
+      const usdcContract = new ethers.Contract(CONTRACTS.USDC, ['function balanceOf(address) view returns (uint256)'], provider)
+      const balance = await usdcContract.balanceOf(CONTRACTS.TREASURY_MANAGER)
+      setTreasuryBalance(ethers.formatUnits(balance, 6))
+    } catch (error) {
+      console.error('Failed to fetch treasury balance:', error)
     }
   }
 
   const triggerPayroll = async () => {
-    setLoading(true)
-    try {
-      const response = await fetch('/api/treasury/payroll', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          userAddress: user?.wallet?.address,
-          signature: '0x', // This should be generated properly
-        }),
-      })
+    if (!user) {
+      alert('Please connect your wallet')
+      return
+    }
 
-      if (response.ok) {
-        alert('Payroll triggered successfully!')
-        fetchPaymentRequests()
+    setLoading(true)
+    setError('')
+
+    try {
+      const provider = await (window as any).ethereum
+      if (!provider) {
+        throw new Error('No wallet provider found')
       }
-    } catch (error) {
+      
+      // Create ethers provider and signer
+      const ethers = await import('ethers')
+      const ethersProvider = new ethers.BrowserProvider(provider)
+      const signer = await ethersProvider.getSigner()
+      
+      // Call createPaymentRequests
+      const result = await createPaymentRequests(signer)
+      
+      if (result.success) {
+        alert('Payroll triggered successfully!')
+        fetchPayrollData()
+      } else {
+        throw new Error(result.error || 'Failed to trigger payroll')
+      }
+    } catch (error: any) {
       console.error('Failed to trigger payroll:', error)
-      alert('Failed to trigger payroll')
+      setError(error.message || 'Failed to trigger payroll')
+      alert(`Failed to trigger payroll: ${error.message || 'Unknown error'}`)
     } finally {
       setLoading(false)
     }
   }
 
   const toggleAutomation = () => {
-    setIsRunning(!isRunning)
-    // In production, this would update a setting in your backend
+    // Call API to update automation settings
+    fetch('/api/agent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: isRunning ? 'stop' : 'start'
+      })
+    })
+    .then(response => response.json())
+    .then(data => {
+      if (data.success) {
+        setIsRunning(!isRunning)
+        setAutomationEnabled(!isRunning)
+        alert(`Automation ${!isRunning ? 'started' : 'stopped'}`)
+      }
+    })
+    .catch(error => {
+      console.error('Failed to toggle automation:', error)
+    })
+  }
+
+  const handleAddPayee = async () => {
+    if (!payeeForm.address || !payeeForm.salary) {
+      alert('Please fill in all fields')
+      return
+    }
+
+    if (!user) {
+      alert('Please connect your wallet')
+      return
+    }
+
+    try {
+      const provider = await (window as any).ethereum
+      if (!provider) {
+        throw new Error('No wallet provider found')
+      }
+      
+      // Create ethers provider and signer
+      const ethers = await import('ethers')
+      const ethersProvider = new ethers.BrowserProvider(provider)
+      const signer = await ethersProvider.getSigner()
+      
+      // Add payee
+      const success = await addPayee(signer, payeeForm.address, payeeForm.salary)
+      
+      if (success) {
+        alert('Payee added successfully!')
+        setShowAddPayee(false)
+        setPayeeForm({ address: '', salary: '' })
+        fetchPayrollData()
+      } else {
+        throw new Error('Failed to add payee')
+      }
+    } catch (error: any) {
+      console.error('Error adding payee:', error)
+      alert(`Failed to add payee: ${error.message || 'Unknown error'}`)
+    }
+  }
+
+  const handleUpdateThreshold = async () => {
+    // Implementation for updating revenue threshold
+    alert('Update threshold feature coming soon!')
   }
 
   if (!authenticated) {
@@ -112,9 +208,92 @@ export default function PayrollPage() {
       <div className="py-8">
         {/* Header */}
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-white">Payroll Automation</h1>
-          <p className="text-gray-400">Manage and automate x402-powered payments</p>
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+            <div>
+              <h1 className="text-3xl font-bold text-white">Payroll Automation</h1>
+              <p className="text-gray-400">Manage and automate x402-powered payments</p>
+            </div>
+            <div className="flex items-center gap-3">
+              {/* User Wallet Balance */}
+              <div className="px-4 py-2 rounded-lg bg-surface border border-gray-700">
+                <div className="flex items-center gap-2">
+                  <Wallet className="h-4 w-4 text-primary-400" />
+                  <div>
+                    <div className="text-sm text-gray-400">Your Balance</div>
+                    <div className="font-semibold text-white">
+                      {userWalletBalance} USDC
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              {/* Treasury Balance */}
+              <div className="px-4 py-2 rounded-lg bg-surface border border-gray-700">
+                <div className="flex items-center gap-2">
+                  <DollarSign className="h-4 w-4 text-green-400" />
+                  <div>
+                    <div className="text-sm text-gray-400">Treasury</div>
+                    <div className="font-semibold text-white">
+                      {treasuryBalance} USDC
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
+
+        {/* Add Payee Modal */}
+        {showAddPayee && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="bg-surface rounded-2xl p-6 w-full max-w-md">
+              <h3 className="text-xl font-bold text-white mb-4">Add New Payee</h3>
+              
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Payee Address
+                  </label>
+                  <input
+                    type="text"
+                    value={payeeForm.address}
+                    onChange={(e) => setPayeeForm({...payeeForm, address: e.target.value})}
+                    placeholder="0x..."
+                    className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500"
+                  />
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Monthly Salary (USDC)
+                  </label>
+                  <input
+                    type="number"
+                    value={payeeForm.salary}
+                    onChange={(e) => setPayeeForm({...payeeForm, salary: e.target.value})}
+                    placeholder="1000"
+                    className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500"
+                  />
+                </div>
+              </div>
+              
+              <div className="flex gap-3 mt-6">
+                <button
+                  onClick={() => setShowAddPayee(false)}
+                  className="flex-1 py-2 rounded-lg bg-gray-800 text-gray-300 hover:bg-gray-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleAddPayee}
+                  className="flex-1 py-2 rounded-lg bg-primary-500 text-white hover:bg-primary-600"
+                >
+                  Add Payee
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Automation Controls */}
         <div className="glass rounded-2xl p-6 mb-8">
@@ -124,6 +303,12 @@ export default function PayrollPage() {
               <p className="text-gray-400">
                 Set up automatic payroll processing based on revenue thresholds
               </p>
+              <div className="flex items-center gap-2 mt-2">
+                <div className={`w-2 h-2 rounded-full ${automationEnabled ? 'bg-green-400' : 'bg-gray-500'}`}></div>
+                <span className="text-sm text-gray-300">
+                  {automationEnabled ? 'Automation active' : 'Automation paused'}
+                </span>
+              </div>
             </div>
             <div className="flex items-center gap-4">
               <button
@@ -150,7 +335,7 @@ export default function PayrollPage() {
               <button
                 onClick={triggerPayroll}
                 disabled={loading}
-                className="px-6 py-3 rounded-lg bg-gradient-primary text-white font-semibold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                className="px-6 py-3 rounded-lg bg-gradient-to-r from-primary-500 to-primary-600 text-white font-semibold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 {loading ? (
                   <>
@@ -164,79 +349,107 @@ export default function PayrollPage() {
                   </>
                 )}
               </button>
+              
+              <button
+                onClick={() => setShowAddPayee(true)}
+                className="px-6 py-3 rounded-lg bg-gradient-to-r from-secondary-500 to-secondary-600 text-white font-semibold hover:opacity-90 flex items-center gap-2"
+              >
+                <Plus className="h-5 w-5" />
+                Add Payee
+              </button>
             </div>
           </div>
         </div>
 
-        {/* Payment Requests */}
-        <div className="glass rounded-2xl overflow-hidden">
-          <div className="p-6 border-b border-border">
-            <h2 className="text-xl font-semibold text-white">Recent Payment Requests</h2>
-            <p className="text-gray-400">Track x402 payment requests and settlements</p>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-surface">
-                <tr>
-                  <th className="text-left p-4 text-gray-300 font-medium">ID</th>
-                  <th className="text-left p-4 text-gray-300 font-medium">Payee</th>
-                  <th className="text-left p-4 text-gray-300 font-medium">Amount</th>
-                  <th className="text-left p-4 text-gray-300 font-medium">Status</th>
-                  <th className="text-left p-4 text-gray-300 font-medium">Date</th>
-                  <th className="text-left p-4 text-gray-300 font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-800">
-                {paymentRequests.map((request) => (
-                  <tr key={request.id} className="hover:bg-gray-800/30">
-                    <td className="p-4">
-                      <div className="font-mono text-sm text-white">#{request.id}</div>
-                    </td>
-                    <td className="p-4">
-                      <div className="font-mono text-sm text-white truncate max-w-[200px]">
-                        {request.payee}
-                      </div>
-                    </td>
-                    <td className="p-4">
-                      <div className="font-semibold text-white">
-                        ${request.amount} USDC
-                      </div>
-                    </td>
-                    <td className="p-4">
-                      <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${
-                        request.status === 'completed' 
-                          ? 'bg-success/20 text-success border border-success/30'
-                          : request.status === 'processing'
-                          ? 'bg-warning/20 text-warning border border-warning/30'
-                          : 'bg-gray-700 text-gray-300 border border-gray-600'
-                      }`}>
-                        {request.status === 'completed' && <CheckCircle className="h-3 w-3 mr-1" />}
-                        {request.status === 'processing' && <RefreshCw className="h-3 w-3 mr-1 animate-spin" />}
-                        {request.status === 'pending' && <Clock className="h-3 w-3 mr-1" />}
-                        {request.status === 'failed' && <AlertCircle className="h-3 w-3 mr-1" />}
-                        {request.status.charAt(0).toUpperCase() + request.status.slice(1)}
-                      </span>
-                    </td>
-                    <td className="p-4">
-                      <div className="text-gray-300">{request.date}</div>
-                    </td>
-                    <td className="p-4">
-                      {request.txHash && (
-                        <a
-                          href={`https://cronos.org/explorer/testnet3/tx/${request.txHash}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-primary-400 hover:text-primary-300 text-sm"
-                        >
-                          View TX
-                        </a>
-                      )}
-                    </td>
+        {/* Active Payees */}
+        <div className="glass rounded-2xl p-6 mb-8">
+          <h2 className="text-xl font-semibold text-white mb-4">Active Payees</h2>
+          {loading ? (
+            <div className="text-center py-8">
+              <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500"></div>
+              <p className="mt-2 text-gray-400">Loading payees...</p>
+            </div>
+          ) : activePayees.length === 0 ? (
+            <div className="text-center py-8">
+              <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gray-800 flex items-center justify-center">
+                <Users className="h-8 w-8 text-gray-400" />
+              </div>
+              <h3 className="text-lg font-semibold text-white mb-2">No Payees Found</h3>
+              <p className="text-gray-400 mb-4">Add payees to start managing payroll</p>
+              <button
+                onClick={() => setShowAddPayee(true)}
+                className="px-4 py-2 rounded-lg bg-primary-500 text-white hover:bg-primary-600"
+              >
+                Add Your First Payee
+              </button>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead className="bg-gray-900/50">
+                  <tr>
+                    <th className="text-left p-3 text-gray-300 font-medium">Address</th>
+                    <th className="text-left p-3 text-gray-300 font-medium">Monthly Salary</th>
+                    <th className="text-left p-3 text-gray-300 font-medium">Last Payment</th>
+                    <th className="text-left p-3 text-gray-300 font-medium">Accrued</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-gray-800">
+                  {activePayees.map((payee, index) => (
+                    <tr key={index} className="hover:bg-gray-800/30">
+                      <td className="p-3">
+                        <div className="font-mono text-sm text-white">
+                          {payee.address.substring(0, 8)}...{payee.address.substring(payee.address.length - 6)}
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <div className="font-semibold text-white">
+                          ${(Number(payee.salary) / 1_000_000).toFixed(2)} USDC
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <div className="text-gray-300">
+                          {payee.lastPayment.toLocaleDateString()}
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <div className="text-gray-300">
+                          ${(Number(payee.accrued) / 1_000_000).toFixed(2)} USDC
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Revenue Threshold Settings */}
+        <div className="glass rounded-2xl p-6">
+          <h2 className="text-xl font-semibold text-white mb-4">Revenue Threshold Settings</h2>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                Minimum Revenue to Trigger Payroll (USDC)
+              </label>
+              <div className="flex gap-3">
+                <input
+                  type="number"
+                  placeholder="10000"
+                  className="flex-1 px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white"
+                />
+                <button
+                  onClick={handleUpdateThreshold}
+                  className="px-6 py-2 rounded-lg bg-primary-500 text-white hover:bg-primary-600"
+                >
+                  Update
+                </button>
+              </div>
+              <p className="text-sm text-gray-400 mt-2">
+                Payroll will automatically trigger when treasury balance exceeds this amount
+              </p>
+            </div>
           </div>
         </div>
       </div>

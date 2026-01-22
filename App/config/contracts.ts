@@ -1,10 +1,18 @@
 // config/contracts.ts
+// config/contracts.ts
+import { ethers } from 'ethers'
+
 export const CONTRACTS = {
   TREASURY_MANAGER: (process.env.NEXT_PUBLIC_TREASURY_CONTRACT || '0x084622e6970BBcBA510454C6145313c2993ED9E4') as `0x${string}`,
-  USDC: (process.env.NEXT_PUBLIC_USDC_CONTRACT || '0xc01efAaF7C5C61bEbFAeb358E1161b537b8bC0') as `0x${string}`,
+  USDC: (process.env.NEXT_PUBLIC_USDC_CONTRACT || '0xc01efAaF7C5C61bEbFAeb358E1161b537b8bC0e0') as `0x${string}`,
   X402_FACILITATOR_URL: process.env.NEXT_PUBLIC_X402_FACILITATOR_URL || 'https://facilitator.cronoslabs.org/v2/x402',
 } as const
 
+// Add mainnet/testnet detection
+export const NETWORK = process.env.NEXT_PUBLIC_NETWORK || 'testnet'
+export const IS_TESTNET = NETWORK === 'testnet'
+
+// ABI for TreasuryManager
 export const TREASURY_ABI = [
   'function getActivePayees() view returns (address[] memory, uint256[] memory, uint256[] memory, uint256[] memory)',
   'function getTreasuryBalance() view returns (uint256)',
@@ -31,8 +39,9 @@ export const TREASURY_ABI = [
   'event PayeeDeactivated(address indexed payee)',
   'event RevenueThresholdUpdated(uint256 oldThreshold, uint256 newThreshold)',
   'event X402FacilitatorUpdated(address indexed oldFacilitator, address indexed newFacilitator)',
-] as const
+]
 
+// ABI for USDC
 export const USDC_ABI = [
   'function balanceOf(address account) view returns (uint256)',
   'function decimals() view returns (uint8)',
@@ -41,4 +50,16 @@ export const USDC_ABI = [
   'function allowance(address owner, address spender) view returns (uint256)',
   'function transfer(address recipient, uint256 amount) returns (bool)',
   'function transferFrom(address sender, address recipient, uint256 amount) returns (bool)',
-] as const
+]
+
+// Helper function to get provider
+export const getProvider = () => {
+  return new ethers.JsonRpcProvider('https://evm-t3.cronos.org')
+}
+
+// Helper function to get contract instance
+export const getContract = (address: string, abi: any, signer?: ethers.Signer) => {
+  const provider = getProvider()
+  const contractSigner = signer || provider
+  return new ethers.Contract(address, abi, contractSigner)
+}

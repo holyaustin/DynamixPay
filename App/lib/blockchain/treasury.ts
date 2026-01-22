@@ -1,4 +1,154 @@
 // lib/blockchain/treasury.ts
+
+import { ethers } from 'ethers'
+import { getTreasuryContract, getUsdcContract } from './ethers-utils'
+
+export interface Payee {
+  address: string
+  salary: bigint
+  lastPayment: Date
+  accrued: bigint
+  active: boolean
+}
+
+export async function getTreasuryBalance(): Promise<bigint> {
+  try {
+    const treasuryContract = getTreasuryContract()
+    const balance = await treasuryContract.getTreasuryBalance()
+    return BigInt(balance.toString())
+  } catch (error) {
+    console.error('Failed to get treasury balance:', error)
+    return BigInt(0)
+  }
+}
+
+export async function getActivePayees(): Promise<Payee[]> {
+  try {
+    const treasuryContract = getTreasuryContract()
+    const [addresses, salaries, lastPayments, accrued] = await treasuryContract.getActivePayees()
+    
+    return addresses.map((address: string, index: number) => ({
+      address,
+      salary: BigInt(salaries[index].toString()),
+      lastPayment: new Date(Number(lastPayments[index]) * 1000),
+      accrued: BigInt(accrued[index].toString()),
+      active: true
+    }))
+  } catch (error) {
+    console.error('Failed to get active payees:', error)
+    return []
+  }
+}
+
+export async function getTotalAccrued(): Promise<bigint> {
+  try {
+    const treasuryContract = getTreasuryContract()
+    const accrued = await treasuryContract.getTotalAccrued()
+    return BigInt(accrued.toString())
+  } catch (error) {
+    console.error('Failed to get total accrued:', error)
+    return BigInt(0)
+  }
+}
+
+export async function addPayee(signer: ethers.Signer, payeeAddress: string, salary: string): Promise<boolean> {
+  try {
+    const treasuryContract = getTreasuryContract(signer)
+    const salaryWei = ethers.parseUnits(salary, 6)
+    
+    const tx = await treasuryContract.addPayee(payeeAddress, salaryWei)
+    await tx.wait()
+    
+    return true
+  } catch (error) {
+    console.error('Failed to add payee:', error)
+    return false
+  }
+}
+
+// Enhanced version with proper event parsing
+export async function createPaymentRequests(signer: ethers.Signer): Promise<{ success: boolean, requestIds?: bigint[], error?: string }> {
+  try {
+    const treasuryContract = getTreasuryContract(signer)
+    const tx = await treasuryContract.createPaymentRequests()
+    const receipt = await tx.wait()
+    
+    if (!receipt) {
+      return { success: false, error: 'Transaction receipt not found' }
+    }
+    
+    // Get the contract interface to parse logs
+    const contractInterface = treasuryContract.interface
+    const contractAddress = await treasuryContract.getAddress()
+    
+    // Parse all logs from this contract - FIXED: use Promise.all for async operations
+    const parsedLogsPromises = receipt.logs.map(async (log: any) => {
+      try {
+        // Convert address to string for comparison
+        let logAddress: string
+        if (typeof log.address === 'string') {
+          logAddress = log.address
+        } else if (log.address && typeof log.address.getAddress === 'function') {
+          logAddress = await log.address.getAddress()
+        } else {
+          logAddress = String(log.address)
+        }
+        
+        if (logAddress.toLowerCase() === contractAddress.toLowerCase()) {
+          return contractInterface.parseLog({
+            topics: [...log.topics],
+            data: log.data
+          })
+        }
+        return null
+      } catch {
+        return null // Log doesn't belong to this contract
+      }
+    })
+    
+    const parsedLogs = (await Promise.all(parsedLogsPromises)).filter((log: any) => log !== null)
+    
+    // Extract PaymentRequestCreated events
+    const paymentRequestEvents = parsedLogs.filter(
+      (log: any) => log?.name === 'PaymentRequestCreated'
+    )
+    
+    // Extract request IDs from events
+    const requestIds = paymentRequestEvents.map((event: any) => 
+      event.args.requestId ? BigInt(event.args.requestId.toString()) : BigInt(0)
+    )
+    
+    return { 
+      success: true, 
+      requestIds: requestIds.length > 0 ? requestIds : undefined 
+    }
+  } catch (error: any) {
+    console.error('Failed to create payment requests:', error)
+    return { success: false, error: error.message }
+  }
+}
+
+export async function getPaymentRequest(requestId: number): Promise<any> {
+  try {
+    const treasuryContract = getTreasuryContract()
+    const [payee, amount, timestamp, x402Id, settled] = await treasuryContract.getPaymentRequest(requestId)
+    
+    return {
+      payee,
+      amount: amount.toString(),
+      timestamp: new Date(Number(timestamp) * 1000),
+      x402Id,
+      settled
+    }
+  } catch (error) {
+    console.error('Failed to get payment request:', error)
+    return null
+  }
+}
+
+
+/*
+// lib/blockchain/treasury.ts
 import { publicClient } from './provider'
 import { CONTRACTS } from '@/config/contracts'
 
@@ -173,3 +323,4 @@ export function isPaymentDue(lastPayment: Date): boolean {
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
   return lastPayment < thirtyDaysAgo
 }
+  */

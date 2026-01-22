@@ -15,7 +15,7 @@ export function Footer() {
             <div className="space-y-4">
               <div className="flex items-center space-x-3">
                 <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-primary-500 to-primary-600">
-                  <div className="h-14 w-14 text-white">
+                  <div className="h-14 w-14 p-2 text-white">
                   <Image
                     src="/logo3.png" // Path relative to the public directory
                     width={40}

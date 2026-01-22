@@ -9,6 +9,9 @@ import {
   TrendingUp, TrendingDown, DollarSign, Users,
   Calendar, BarChart3, PieChart, Download
 } from 'lucide-react'
+import { CONTRACTS, TREASURY_ABI } from '@/config/contracts'
+import { getTreasuryBalance, getActivePayees, getTotalAccrued } from '@/lib/blockchain/treasury'
+import { getBalance } from '@/lib/blockchain/ethers-utils'
 
 interface AnalyticsData {
   revenue: {
@@ -34,10 +37,12 @@ interface AnalyticsData {
 }
 
 export default function AnalyticsPage() {
-  const { authenticated } = usePrivy()
+  const { authenticated, user } = usePrivy()
   const [data, setData] = useState<AnalyticsData | null>(null)
   const [timeRange, setTimeRange] = useState<'7d' | '30d' | '90d'>('30d')
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [revenueThreshold, setRevenueThreshold] = useState<string>('0')
 
   useEffect(() => {
     if (authenticated) {
@@ -47,39 +52,76 @@ export default function AnalyticsPage() {
 
   const fetchAnalyticsData = async () => {
     setLoading(true)
+    setError(null)
     try {
-      // Mock data - in production, fetch from your API
-      const mockData: AnalyticsData = {
+      // Fetch real data from blockchain
+      const treasuryBalance = await getTreasuryBalance()
+      const payees = await getActivePayees()
+      const totalAccrued = await getTotalAccrued()
+      
+      // Get revenue threshold
+      try {
+        const ethers = await import('ethers')
+        const provider = new ethers.JsonRpcProvider('https://evm-t3.cronos.org')
+        const treasuryContract = new ethers.Contract(CONTRACTS.TREASURY_MANAGER, TREASURY_ABI, provider)
+        const threshold = await treasuryContract.revenueThreshold()
+        setRevenueThreshold(ethers.formatUnits(threshold, 6))
+      } catch (error) {
+        console.error('Failed to fetch revenue threshold:', error)
+      }
+      
+      // Calculate real metrics
+      const totalRevenue = Number(treasuryBalance) / 1_000_000
+      const totalAccruedAmount = Number(totalAccrued) / 1_000_000
+      const totalMonthlyOutflow = payees.reduce((sum, p) => sum + Number(p.salary) / 1_000_000, 0)
+      
+      // Calculate due payments
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+      const duePayees = payees.filter(p => p.lastPayment < thirtyDaysAgo).length
+      
+      // Get payment history from events (simplified - in production, query events)
+      const paymentHistory = await getPaymentHistory(timeRange)
+      
+      const analyticsData: AnalyticsData = {
         revenue: {
-          total: 152400,
-          change: 12.5,
-          history: Array.from({ length: 30 }, (_, i) => ({
-            date: `Jan ${i + 1}`,
-            amount: Math.random() * 10000 + 1000
-          }))
+          total: totalRevenue,
+          change: 12.5, // This would be calculated from historical data
+          history: paymentHistory
         },
         payments: {
-          total: 24,
-          count: 156,
-          average: 1560.42
+          total: duePayees,
+          count: payees.length,
+          average: totalMonthlyOutflow / payees.length || 0
         },
         payees: {
-          active: 12,
-          inactive: 3,
-          growth: 25
+          active: payees.length,
+          inactive: 0, // Would need to track inactive payees
+          growth: 25 // Would calculate from historical data
         },
         expenses: {
-          payroll: 42000,
-          gas: 245.50,
-          fees: 1200.75
+          payroll: totalMonthlyOutflow,
+          gas: 245.50, // Would calculate from transaction history
+          fees: 1200.75 // Would calculate from historical data
         }
       }
-      setData(mockData)
+      
+      setData(analyticsData)
     } catch (error) {
       console.error('Failed to fetch analytics:', error)
+      setError('Failed to load analytics data. Please try again.')
     } finally {
       setLoading(false)
     }
+  }
+
+  const getPaymentHistory = async (range: string): Promise<{ date: string; amount: number }[]> => {
+    // In production, query contract events for payment history
+    // For now, return mock data
+    const days = range === '7d' ? 7 : range === '30d' ? 30 : 90
+    return Array.from({ length: days }, (_, i) => ({
+      date: `Day ${i + 1}`,
+      amount: Math.random() * 10000 + 1000
+    }))
   }
 
   if (!authenticated) {
@@ -113,6 +155,24 @@ export default function AnalyticsPage() {
               ))}
             </div>
           </div>
+        </div>
+      </Container>
+    )
+  }
+
+  if (error) {
+    return (
+      <Container>
+        <div className="py-8">
+          <div className="p-4 bg-error/10 border border-error/30 rounded-lg mb-4">
+            <div className="text-error">{error}</div>
+          </div>
+          <button
+            onClick={fetchAnalyticsData}
+            className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600"
+          >
+            Retry
+          </button>
         </div>
       </Container>
     )
@@ -170,9 +230,14 @@ export default function AnalyticsPage() {
               </span>
             </div>
             <div className="text-2xl font-bold text-white">
-              ${data.revenue.total.toLocaleString()}
+              ${data.revenue.total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
             <div className="text-sm text-gray-400">Total Revenue</div>
+            {revenueThreshold && (
+              <div className="text-xs text-gray-500 mt-1">
+                Threshold: ${parseFloat(revenueThreshold).toFixed(2)}
+              </div>
+            )}
           </div>
 
           <div className="glass rounded-xl p-6">
@@ -187,6 +252,9 @@ export default function AnalyticsPage() {
             </div>
             <div className="text-2xl font-bold text-white">{data.payees.active}</div>
             <div className="text-sm text-gray-400">Active Payees</div>
+            <div className="text-xs text-gray-500 mt-1">
+              {data.payments.total} due for payment
+            </div>
           </div>
 
           <div className="glass rounded-xl p-6">
@@ -197,6 +265,9 @@ export default function AnalyticsPage() {
             </div>
             <div className="text-2xl font-bold text-white">{data.payments.total}</div>
             <div className="text-sm text-gray-400">Payments This Month</div>
+            <div className="text-xs text-gray-500 mt-1">
+              Avg: ${data.payments.average.toFixed(2)}
+            </div>
           </div>
 
           <div className="glass rounded-xl p-6">
@@ -206,9 +277,12 @@ export default function AnalyticsPage() {
               </div>
             </div>
             <div className="text-2xl font-bold text-white">
-              ${data.expenses.payroll.toLocaleString()}
+              ${data.expenses.payroll.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
             <div className="text-sm text-gray-400">Monthly Payroll</div>
+            <div className="text-xs text-gray-500 mt-1">
+              Total: ${(data.expenses.payroll + data.expenses.gas + data.expenses.fees).toFixed(2)}
+            </div>
           </div>
         </div>
 
@@ -236,7 +310,7 @@ export default function AnalyticsPage() {
             </div>
             <div className="flex justify-between mt-4 text-sm text-gray-400">
               {data.revenue.history
-                .filter((_, i) => i % 5 === 0)
+                .filter((_, i) => i % (timeRange === '7d' ? 1 : timeRange === '30d' ? 5 : 15) === 0)
                 .map((item) => (
                   <div key={item.date}>{item.date}</div>
                 ))}
@@ -260,7 +334,7 @@ export default function AnalyticsPage() {
                     <div className="flex justify-between">
                       <span className="text-gray-300">{item.label}</span>
                       <span className="text-white font-medium">
-                        ${item.value.toLocaleString()}
+                        ${item.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </span>
                     </div>
                     <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
@@ -272,6 +346,35 @@ export default function AnalyticsPage() {
                   </div>
                 )
               })}
+            </div>
+          </div>
+        </div>
+
+        {/* Contract Stats */}
+        <div className="mt-8 glass rounded-2xl p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">Contract Statistics</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="text-center p-4 bg-gray-900/50 rounded-lg">
+              <div className="text-sm text-gray-400">Contract Address</div>
+              <div className="font-mono text-xs text-white truncate">
+                {CONTRACTS.TREASURY_MANAGER}
+              </div>
+            </div>
+            <div className="text-center p-4 bg-gray-900/50 rounded-lg">
+              <div className="text-sm text-gray-400">Payment Token</div>
+              <div className="font-mono text-xs text-white truncate">
+                {CONTRACTS.USDC}
+              </div>
+            </div>
+            <div className="text-center p-4 bg-gray-900/50 rounded-lg">
+              <div className="text-sm text-gray-400">Network</div>
+              <div className="text-white">Cronos Testnet</div>
+            </div>
+            <div className="text-center p-4 bg-gray-900/50 rounded-lg">
+              <div className="text-sm text-gray-400">Total Accrued</div>
+              <div className="text-xl font-bold text-white">
+                ${(Number(data.payments.average * data.payments.count)).toFixed(2)}
+              </div>
             </div>
           </div>
         </div>
