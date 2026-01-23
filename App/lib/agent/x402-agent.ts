@@ -1,7 +1,4 @@
 // lib/agent/x402-agent.ts
-// x402 Agent for automated payments
-// Production-ready x402 Agent for automated payments
-// Following official Cronos x402 documentation
 import { createPublicClient, http, parseAbi, parseAbiItem } from 'viem'
 import { cronosTestnet } from '@/config/chains'
 import { CONTRACTS } from '@/config/contracts'

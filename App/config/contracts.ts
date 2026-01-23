@@ -1,5 +1,4 @@
 // config/contracts.ts
-// config/contracts.ts
 import { ethers } from 'ethers'
 
 export const CONTRACTS = {

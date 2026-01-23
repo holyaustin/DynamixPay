@@ -1,3 +1,4 @@
+// /App/app/api/x402/test/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { requireX402Payment } from '@/lib/x402/payment-middleware';
 

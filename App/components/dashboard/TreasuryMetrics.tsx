@@ -1,4 +1,4 @@
-// components/dashboard/TreasuryMetrics.tsx (Enhanced)
+// components/dashboard/TreasuryMetrics.tsx
 
 interface TreasuryMetricsProps {
   title: string

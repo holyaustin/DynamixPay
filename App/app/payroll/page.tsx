@@ -1,4 +1,4 @@
-// app/payroll/page.tsx - COMPLETE FIXED VERSION
+// app/payroll/page.tsx 
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'

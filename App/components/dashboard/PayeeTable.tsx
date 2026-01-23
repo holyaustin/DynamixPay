@@ -1,5 +1,4 @@
 // components/dashboard/PayeeTable.tsx
-// components/dashboard/PayeeTable.tsx
 'use client'
 
 import { useState } from 'react'

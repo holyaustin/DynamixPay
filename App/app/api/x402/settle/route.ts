@@ -1,4 +1,4 @@
-// /App/app/api/x402/settle/route.ts - COMPLETE FIXED VERSION
+// /App/app/api/x402/settle/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { createWalletClient, http, createPublicClient } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';

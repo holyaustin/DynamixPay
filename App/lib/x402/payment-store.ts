@@ -1,5 +1,4 @@
 // Simple in-memory store (for development)
-// For production, use Redis/Database
 
 interface PaidRecord {
   paymentId: string;

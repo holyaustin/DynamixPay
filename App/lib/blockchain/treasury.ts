@@ -1,4 +1,4 @@
-// lib/blockchain/treasury.ts - Fixed version
+// lib/blockchain/treasury.ts
 
 import { ethers } from 'ethers'
 import { getTreasuryContract, getUsdcContract } from './ethers-utils'

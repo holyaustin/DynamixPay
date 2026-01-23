@@ -1,3 +1,4 @@
+// /App/lib/x402/payment-middleware.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { paymentStore } from './payment-store';
 
