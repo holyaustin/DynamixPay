@@ -1,4 +1,4 @@
-// app/payroll/page.tsx 
+// app/payroll/page.tsx - COMPLETE FIXED VERSION
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
@@ -10,10 +10,10 @@ import {
   AlertCircle, Play, Pause, RefreshCw,
   Plus, Settings, Wallet, ExternalLink,
   Info, ArrowRight, Loader2, AlertTriangle,
-  Calendar, Hash, XCircle
+  Calendar, Hash, XCircle, Shield
 } from 'lucide-react'
 import { CONTRACTS, TREASURY_ABI, USDC_ABI } from '@/config/contracts'
-import { getActivePayees, createPaymentRequests, updateRevenueThreshold, getPaymentRequest } from '@/lib/blockchain/treasury'
+import { getActivePayees, createPaymentRequests, updateRevenueThreshold, getPaymentRequest, getPayee } from '@/lib/blockchain/treasury'
 import { getBalance } from '@/lib/blockchain/ethers-utils'
 import toast from 'react-hot-toast'
 import { ethers } from 'ethers'
@@ -23,6 +23,13 @@ import { formatUnits, parseUnits } from 'ethers'
 interface PayeeForm {
   address: string
   salary: string
+}
+
+interface PaymentResult {
+  success?: boolean;
+  paymentId?: string;
+  txHash?: string;
+  error?: string;
 }
 
 // Interface for blockchain payee data
@@ -106,22 +113,48 @@ export default function PayrollPage() {
   const [processingPayments, setProcessingPayments] = useState<string[]>([])
   const [addingPayee, setAddingPayee] = useState(false)
   const [contractOwner, setContractOwner] = useState<string>('')
+  const [totalMonthlyPayroll, setTotalMonthlyPayroll] = useState<bigint>(0n)
+  const [duePayeesCount, setDuePayeesCount] = useState<number>(0)
   
   // Use the x402 payment hook
-  const { processing: x402Processing, fetchAndProcessPayment } = useX402Payment({
-    onSuccess: (result: any) => {
-      // Use the helper to safely access properties
-      const resultData = getPaymentResultData(result)
-      if (resultData.success && resultData.paymentId) {
-        toast.success(`Payment settled! ID: ${resultData.paymentId}`);
-      } else if (resultData.error) {
-        toast.error(`Payment failed: ${resultData.error}`);
-      }
-    },
-    onError: (error: any) => {
-      toast.error(`Payment failed: ${error.message || error}`);
+const { processing: x402Processing, fetchAndProcessPayment } = useX402Payment({
+  onSuccess: (result: PaymentResult) => {
+    // Type-safe AND defensive
+    if (result.success && result.paymentId) {
+      toast.success(`Payment settled! ID: ${result.paymentId}`);
+    } else if (result.error) {
+      toast.error(`Payment failed: ${result.error}`);
+    } else {
+      toast.error(`Payment failed: Unknown error`);
     }
-  });
+  },
+  onError: (error: Error | string) => {
+    const errorMessage = typeof error === 'string' ? error : error.message;
+    toast.error(`Payment failed: ${errorMessage}`);
+  }
+});
+
+  // Fetch revenue threshold from contract
+  const fetchRevenueThreshold = useCallback(async () => {
+    if (!authenticated || !user?.wallet?.address) return;
+    
+    try {
+      if (window.ethereum) {
+        const provider = new ethers.BrowserProvider(window.ethereum);
+        const contract = new ethers.Contract(
+          CONTRACTS.TREASURY_MANAGER,
+          ['function revenueThreshold() view returns (uint256)'],
+          provider
+        );
+        const threshold = await contract.revenueThreshold();
+        const formattedThreshold = formatUnits(threshold, 6);
+        setRevenueThreshold(formattedThreshold);
+        console.log('Fetched revenue threshold from contract:', formattedThreshold);
+      }
+    } catch (error) {
+      console.error('Failed to fetch revenue threshold:', error);
+    }
+  }, [authenticated, user]);
 
   // Fetch payroll data
   const fetchPayrollData = useCallback(async () => {
@@ -140,7 +173,7 @@ export default function PayrollPage() {
       const transformedPayees: BlockchainPayee[] = payees.map((payee: any) => ({
         address: payee.address,
         salary: BigInt(payee.salary || 0),
-        lastPayment: BigInt(payee.lastPayment || 0),
+        lastPayment: BigInt(Math.floor(payee.lastPayment.getTime() / 1000)),
         accrued: BigInt(payee.accrued || 0),
         active: Boolean(payee.active)
       }));
@@ -151,6 +184,17 @@ export default function PayrollPage() {
       console.log('Filtered payees:', filteredPayees);
       
       setActivePayees(filteredPayees)
+      
+      // Calculate total monthly payroll and due payees
+      const totalPayroll = filteredPayees.reduce((sum, p) => sum + p.salary, 0n)
+      const thirtyDaysAgo = Math.floor(Date.now() / 1000) - (30 * 24 * 60 * 60)
+      const duePayees = filteredPayees.filter(p => {
+        // If never paid (lastPayment === 0) OR paid more than 30 days ago
+        return p.lastPayment === 0n || Number(p.lastPayment) < thirtyDaysAgo
+      }).length
+      
+      setTotalMonthlyPayroll(totalPayroll)
+      setDuePayeesCount(duePayees)
       
       // Check if user is contract owner
       try {
@@ -218,14 +262,42 @@ export default function PayrollPage() {
     }
   }, [])
 
+  // Check treasury balance before payroll
+  const checkTreasurySufficiency = async (): Promise<{ sufficient: boolean; message: string }> => {
+    try {
+      const treasuryBalanceBigInt = parseUnits(treasuryBalance, 6)
+      const requiredAmount = totalMonthlyPayroll
+      
+      console.log('Checking treasury sufficiency:', {
+        treasuryBalance: treasuryBalanceBigInt.toString(),
+        requiredAmount: requiredAmount.toString(),
+        treasuryBalanceUSD: treasuryBalance,
+        requiredAmountUSD: formatUnits(requiredAmount, 6)
+      })
+      
+      if (treasuryBalanceBigInt < requiredAmount) {
+        return {
+          sufficient: false,
+          message: `Insufficient treasury balance. Required: $${formatUnits(requiredAmount, 6)} USDC, Available: $${treasuryBalance} USDC`
+        }
+      }
+      
+      return { sufficient: true, message: 'Treasury balance sufficient' }
+    } catch (error) {
+      console.error('Error checking treasury sufficiency:', error)
+      return { sufficient: false, message: 'Error checking treasury balance' }
+    }
+  }
+
   // Initial data fetch
   useEffect(() => {
     if (authenticated) {
       fetchPayrollData()
       fetchBalances()
       checkAgentStatus()
+      fetchRevenueThreshold()
     }
-  }, [authenticated, fetchPayrollData, fetchBalances, checkAgentStatus])
+  }, [authenticated, fetchPayrollData, fetchBalances, checkAgentStatus, fetchRevenueThreshold])
 
   // Refresh all data
   const refreshData = async () => {
@@ -234,7 +306,8 @@ export default function PayrollPage() {
       await Promise.all([
         fetchPayrollData(),
         fetchBalances(),
-        checkAgentStatus()
+        checkAgentStatus(),
+        fetchRevenueThreshold()
       ])
       toast.success('Data refreshed successfully')
     } catch (error) {
@@ -314,9 +387,8 @@ export default function PayrollPage() {
         );
 
         try {
-          const existingPayee = await treasuryContract.getPayee(payeeForm.address);
-          const [, , , active] = existingPayee;
-          if (active) {
+          const existingPayee = await getPayee(payeeForm.address);
+          if (existingPayee && existingPayee.active) {
             toast.dismiss(loadingToast);
             toast.error('Payee already exists in the system');
             setError('Payee already exists');
@@ -536,7 +608,7 @@ export default function PayrollPage() {
     }
   };
 
-  // Trigger payroll for all due payees
+  // FIXED: Trigger payroll for all due payees with proper error handling
   const triggerPayroll = async () => {
     if (!user) {
       toast.error('Please connect your wallet');
@@ -554,6 +626,7 @@ export default function PayrollPage() {
       // Create ethers provider and signer
       const provider = new ethers.BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
+      const userAddress = await signer.getAddress();
       
       // First check if user is contract owner
       const contract = new ethers.Contract(
@@ -562,81 +635,128 @@ export default function PayrollPage() {
         provider
       );
       const owner = await contract.owner();
-      const userAddress = await signer.getAddress();
       
       if (owner.toLowerCase() !== userAddress.toLowerCase()) {
         toast.error('Only contract owner can trigger payroll');
+        setError('You are not the contract owner');
+        setLoading(false);
         return;
       }
       
-      // Call createPaymentRequests
-      toast.loading('Creating payment requests...');
-      const result = await createPaymentRequests(signer);
-      
-      if (result.success) {
-        toast.success('Payment requests created successfully!');
-        
-        // Process x402 payments for each request
-        if (result.requestIds && result.requestIds.length > 0) {
-          toast.success(`Processing ${result.requestIds.length} payments via x402...`, { duration: 3000 });
-          
-          const paymentsPromises = result.requestIds.map(async (requestIdBigInt) => {
-            const requestId = requestIdBigInt.toString();
-            
-            try {
-              // Get payment request details from contract
-              const paymentRequest = await getPaymentRequest(requestIdBigInt);
-              
-              if (paymentRequest && !paymentRequest.settled) {
-                const paymentResult = await processX402Payment(
-                  paymentRequest.payee,
-                  paymentRequest.amount,
-                  requestId
-                );
-                
-                if (paymentResult?.success) {
-                  return { success: true, requestId };
-                } else {
-                  return { 
-                    success: false, 
-                    requestId, 
-                    error: paymentResult?.error || 'Unknown error' 
-                  };
-                }
-              }
-              return { success: false, requestId, error: 'No payment request found' };
-            } catch (error: any) {
-              console.error(`Failed to process payment for request ${requestId}:`, error);
-              return { success: false, requestId, error: error.message };
-            }
-          });
-          
-          // Process payments with a small delay between each to avoid rate limiting
-          const results = [];
-          for (let i = 0; i < paymentsPromises.length; i++) {
-            if (i > 0) {
-              await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay
-            }
-            results.push(await paymentsPromises[i]);
-          }
-          
-          const successfulPayments = results.filter(r => r.success).length;
-          
-          if (successfulPayments > 0) {
-            toast.success(`Successfully processed ${successfulPayments} of ${results.length} payments`);
-          } else {
-            toast.error('No payments were successfully processed');
-          }
-        }
-        
-        fetchPayrollData();
-      } else {
-        throw new Error(result.error || 'Failed to trigger payroll');
+      // Check if there are due payees
+      if (duePayeesCount === 0) {
+        toast.error('No payees are due for payment');
+        setError('All payees have been paid within the last 30 days');
+        setLoading(false);
+        return;
       }
+      
+      // Check treasury balance before proceeding (but don't check revenue threshold for manual)
+      const balanceCheck = await checkTreasurySufficiency();
+      if (!balanceCheck.sufficient) {
+        toast.error(balanceCheck.message);
+        setError(balanceCheck.message);
+        setLoading(false);
+        return;
+      }
+      
+      console.log('All checks passed, calling createPaymentRequests...', {
+        userAddress,
+        duePayeesCount,
+        treasuryBalance,
+        totalMonthlyPayroll: totalMonthlyPayroll.toString(),
+        totalMonthlyPayrollUSD: formatUnits(totalMonthlyPayroll, 6)
+      });
+      
+      // Show loading toast
+      const loadingToast = toast.loading('Creating payment requests...');
+      
+      try {
+        // Call the simplified createPaymentRequests function
+        const result = await createPaymentRequests(signer);
+        
+        if (result.success) {
+          toast.dismiss(loadingToast);
+          
+          if (result.requestIds && result.requestIds.length > 0) {
+            toast.success(`Created ${result.requestIds.length} payment requests!`, { duration: 3000 });
+            
+            // Process x402 payments for each request
+            toast.success(`Processing ${result.requestIds.length} payments via x402...`, { duration: 3000 });
+            
+            const results = [];
+            for (let i = 0; i < result.requestIds.length; i++) {
+              const requestId = result.requestIds[i];
+              const requestIdStr = requestId.toString();
+              
+              try {
+                // Get payment request details from contract
+                const paymentRequest = await getPaymentRequest(requestId);
+                
+                if (paymentRequest && !paymentRequest.settled) {
+                  console.log(`Processing payment for request ${requestIdStr}:`, {
+                    payee: paymentRequest.payee,
+                    amount: paymentRequest.amount.toString(),
+                    amountUSD: formatUnits(paymentRequest.amount, 6)
+                  });
+                  
+                  const paymentResult = await processX402Payment(
+                    paymentRequest.payee,
+                    paymentRequest.amount,
+                    requestId
+                  );
+                  
+                  if (paymentResult?.success) {
+                    results.push({ success: true, requestId: requestIdStr });
+                    toast.success(`Payment ${i + 1}/${result.requestIds.length} processed!`);
+                  } else {
+                    results.push({ 
+                      success: false, 
+                      requestId: requestIdStr, 
+                      error: paymentResult?.error || 'Unknown error' 
+                    });
+                  }
+                }
+              } catch (error: any) {
+                console.error(`Failed to process payment for request ${requestIdStr}:`, error);
+                results.push({ success: false, requestId: requestIdStr, error: error.message });
+              }
+              
+              // Add delay between payments to avoid rate limiting
+              if (i < result.requestIds.length - 1) {
+                await new Promise(resolve => setTimeout(resolve, 2000));
+              }
+            }
+            
+            const successfulPayments = results.filter(r => r.success).length;
+            
+            if (successfulPayments > 0) {
+              toast.success(`Successfully processed ${successfulPayments} of ${results.length} payments`);
+            } else {
+              toast.error('No payments were successfully processed');
+            }
+          } else {
+            toast('No payment requests were created (possibly no due payees)', { duration: 3000 });
+          }
+          
+          // Refresh data after processing
+          setTimeout(() => {
+            fetchPayrollData();
+            fetchBalances();
+          }, 3000);
+          
+        } else {
+          throw new Error(result.error || 'Failed to create payment requests');
+        }
+      } catch (contractError: any) {
+        toast.dismiss(loadingToast);
+        throw contractError;
+      }
+      
     } catch (error: any) {
       console.error('Failed to trigger payroll:', error);
       setError(error.message || 'Failed to trigger payroll');
-      toast.error(`Failed to trigger payroll: ${error.message || 'Unknown error'}`);
+      toast.error(`Payroll trigger failed: ${error.message || 'Unknown error'}`);
     } finally {
       setLoading(false);
     }
@@ -667,7 +787,7 @@ export default function PayrollPage() {
     }
   }
 
-  // Update revenue threshold
+  // Update revenue threshold - FIXED VERSION (single error handling)
   const handleUpdateThreshold = async () => {
     if (!revenueThreshold || parseFloat(revenueThreshold) <= 0) {
       toast.error('Please enter a valid threshold amount');
@@ -682,6 +802,8 @@ export default function PayrollPage() {
     setUpdatingThreshold(true);
     setError('');
 
+    let loadingToast: string | undefined;
+    
     try {
       if (!window.ethereum) {
         throw new Error('No wallet provider found');
@@ -690,6 +812,7 @@ export default function PayrollPage() {
       // Create ethers provider and signer
       const provider = new ethers.BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
+      const userAddress = await signer.getAddress();
       
       // First check if user is contract owner
       const contract = new ethers.Contract(
@@ -698,33 +821,139 @@ export default function PayrollPage() {
         provider
       );
       const owner = await contract.owner();
-      const userAddress = await signer.getAddress();
       
       if (owner.toLowerCase() !== userAddress.toLowerCase()) {
         toast.error('Only contract owner can update threshold');
+        setUpdatingThreshold(false);
         return;
       }
+      
+      console.log('Updating revenue threshold:', {
+        newThreshold: revenueThreshold,
+        userAddress,
+        contractOwner: owner
+      });
       
       // Convert to base units (6 decimals)
       const thresholdBaseUnits = parseUnits(revenueThreshold, 6);
       
-      const loadingToast = toast.loading('Updating revenue threshold...');
+      loadingToast = toast.loading('Updating revenue threshold on blockchain...');
       
-      // Update revenue threshold
-      const result = await updateRevenueThreshold(signer, revenueThreshold);
+      // Create contract instance with signer
+      const treasuryContract = new ethers.Contract(
+        CONTRACTS.TREASURY_MANAGER,
+        TREASURY_ABI,
+        signer
+      );
       
-      if (result.success) {
+      // Estimate gas first
+      const gasEstimate = await treasuryContract.updateRevenueThreshold.estimateGas(
+        thresholdBaseUnits
+      );
+      
+      console.log('Gas estimate:', gasEstimate.toString());
+      
+      // Send transaction
+      const tx = await treasuryContract.updateRevenueThreshold(
+        thresholdBaseUnits,
+        {
+          gasLimit: gasEstimate * 120n / 100n // 20% buffer
+        }
+      );
+      
+      if (loadingToast) {
         toast.dismiss(loadingToast);
-        toast.success('Revenue threshold updated successfully!');
-        fetchPayrollData();
-      } else {
-        toast.dismiss(loadingToast);
-        throw new Error(result.error || 'Failed to update threshold');
       }
+      
+      loadingToast = toast.loading('Waiting for transaction confirmation...', { id: 'threshold-update' });
+      
+      console.log('Transaction sent:', tx.hash);
+      
+      // Wait for confirmation
+      const receipt = await tx.wait();
+      
+      if (!receipt) {
+        throw new Error('Transaction receipt not found');
+      }
+      
+      if (receipt.status === 0) {
+        throw new Error('Transaction failed (status: 0)');
+      }
+      
+      if (loadingToast) {
+        toast.dismiss(loadingToast);
+      }
+      
+      toast.success('Revenue threshold updated successfully on blockchain!');
+      
+      // Update local state with new value from contract
+      const newThresholdFromContract = await contract.revenueThreshold();
+      const formattedThreshold = formatUnits(newThresholdFromContract, 6);
+      
+      // Update UI to show actual contract value
+      setRevenueThreshold(formattedThreshold);
+      
+      // Clear any previous errors
+      setError('');
+      
+      // Show success message with details
+      toast.success(`New threshold set to $${formattedThreshold} USDC`, { 
+        duration: 4000,
+        icon: '✅'
+      });
+      
+      console.log('Threshold updated successfully:', {
+        newThreshold: formattedThreshold,
+        txHash: tx.hash,
+        blockNumber: receipt.blockNumber
+      });
+      
     } catch (error: any) {
-      console.error('Error updating threshold:', error);
-      setError(error.message || 'Failed to update threshold');
-      toast.error(`Failed to update threshold: ${error.message || 'Unknown error'}`);
+      // Dismiss any loading toasts
+      if (loadingToast) {
+        toast.dismiss(loadingToast);
+      }
+      
+      // console.error('Error updating threshold:', error);
+      
+      // Parse the error message
+      let errorMessage = 'Failed to update threshold';
+      
+      // Check for specific error types
+      if (error.code === 'ACTION_REJECTED') {
+        errorMessage = 'Transaction rejected by user';
+      } else if (error.code === 'INSUFFICIENT_FUNDS') {
+        errorMessage = 'Insufficient funds for gas. Please add CRO to your wallet.';
+      } else if (error.code === 'CALL_EXCEPTION') {
+        if (error.data) {
+          try {
+            const iface = new ethers.Interface(TREASURY_ABI);
+            const decodedError = iface.parseError(error.data);
+            errorMessage = `Contract error: ${decodedError?.name || 'Unknown'}`;
+            
+            if (decodedError?.name === 'ZeroAmount') {
+              errorMessage = 'Threshold amount must be greater than 0';
+            }
+          } catch (decodeError) {
+            console.error('Failed to decode error:', decodeError);
+            errorMessage = 'Contract rejected transaction';
+          }
+        } else {
+          errorMessage = 'Contract call failed. Check if you are the owner.';
+        }
+      } else if (error.message?.includes('execution reverted')) {
+        errorMessage = 'Contract rejected transaction';
+      } else if (error.message?.includes('user rejected')) {
+        errorMessage = 'Transaction rejected by user';
+      } else if (error.message?.includes('insufficient funds')) {
+        errorMessage = 'Insufficient funds for gas';
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
+      // Set error state
+      setError(errorMessage);
+           
     } finally {
       setUpdatingThreshold(false);
     }
@@ -738,6 +967,20 @@ export default function PayrollPage() {
     }
 
     try {
+      // Check if payee is due for payment
+      const thirtyDaysAgo = Math.floor(Date.now() / 1000) - (30 * 24 * 60 * 60)
+      if (payee.lastPayment !== 0n && Number(payee.lastPayment) >= thirtyDaysAgo) {
+        toast.error('This payee has been paid within the last 30 days');
+        return;
+      }
+      
+      // Check treasury balance for this single payment
+      const treasuryBalanceBigInt = parseUnits(treasuryBalance, 6)
+      if (treasuryBalanceBigInt < payee.salary) {
+        toast.error(`Insufficient treasury balance. Required: $${formatUnits(payee.salary, 6)} USDC`);
+        return;
+      }
+      
       const paymentResult = await processX402Payment(payee.address, payee.salary);
       
       if (paymentResult?.success) {
@@ -756,11 +999,8 @@ export default function PayrollPage() {
   const isPayeeDue = (payee: BlockchainPayee) => {
     if (payee.lastPayment === 0n) return true; // Never paid
     
-    const lastPaymentMs = Number(payee.lastPayment) * 1000; // Convert to milliseconds
-    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
-    const thirtyDaysAgo = Date.now() - thirtyDaysMs;
-    
-    return lastPaymentMs < thirtyDaysAgo;
+    const thirtyDaysAgo = Math.floor(Date.now() / 1000) - (30 * 24 * 60 * 60)
+    return Number(payee.lastPayment) < thirtyDaysAgo;
   };
 
   // Helper to format salary from base units (6 decimals)
@@ -782,6 +1022,9 @@ export default function PayrollPage() {
 
   // Check if user is contract owner
   const isUserContractOwner = contractOwner.toLowerCase() === user?.wallet?.address?.toLowerCase();
+
+  // Calculate total monthly payroll in USD
+  const totalMonthlyPayrollUSD = formatUnits(totalMonthlyPayroll, 6);
 
   if (!authenticated) {
     return (
@@ -825,7 +1068,7 @@ export default function PayrollPage() {
               {/* Contract Owner Status */}
               {isUserContractOwner && (
                 <div className="mt-2 inline-flex items-center px-3 py-1 rounded-full bg-green-500/20 text-green-400 text-sm">
-                  <CheckCircle className="h-3 w-3 mr-1" />
+                  <Shield className="h-3 w-3 mr-1" />
                   Contract Owner
                 </div>
               )}
@@ -860,8 +1103,8 @@ export default function PayrollPage() {
           </div>
         </div>
 
-        {/* Error Display */}
-        {error && (
+        {/* Error Display - Only show non-threshold errors */}
+        {error && !error.toLowerCase().includes('threshold') && (
           <div className="mb-6 p-4 bg-error/10 border border-error/30 rounded-lg">
             <div className="flex items-center">
               <AlertTriangle className="h-5 w-5 text-error mr-2" />
@@ -869,6 +1112,55 @@ export default function PayrollPage() {
             </div>
           </div>
         )}
+
+        {/* Payroll Summary Card */}
+        <div className="glass rounded-xl p-6 mb-8 bg-gradient-to-r from-primary-500/10 to-secondary-500/10 border border-primary-500/30">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+            <div className="flex-1">
+              <h3 className="text-xl font-bold text-white mb-4">Payroll Summary</h3>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="bg-gray-900/50 rounded-lg p-4">
+                  <div className="text-sm text-gray-400 mb-1">Total Payees</div>
+                  <div className="text-2xl font-bold text-white">{activePayees.length}</div>
+                </div>
+                <div className="bg-gray-900/50 rounded-lg p-4">
+                  <div className="text-sm text-gray-400 mb-1">Due for Payment</div>
+                  <div className="text-2xl font-bold text-warning">{duePayeesCount}</div>
+                </div>
+                <div className="bg-gray-900/50 rounded-lg p-4">
+                  <div className="text-sm text-gray-400 mb-1">Monthly Payroll</div>
+                  <div className="text-2xl font-bold text-primary-400">
+                    ${totalMonthlyPayrollUSD}
+                  </div>
+                </div>
+                <div className="bg-gray-900/50 rounded-lg p-4">
+                  <div className="text-sm text-gray-400 mb-1">Treasury Status</div>
+                  <div className={`text-lg font-bold ${
+                    parseFloat(treasuryBalance) >= parseFloat(totalMonthlyPayrollUSD) 
+                      ? 'text-success' 
+                      : 'text-error'
+                  }`}>
+                    {parseFloat(treasuryBalance) >= parseFloat(totalMonthlyPayrollUSD) 
+                      ? 'Sufficient' 
+                      : 'Insufficient'}
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            {duePayeesCount > 0 && (
+              <div className="p-4 bg-gray-900/50 rounded-lg border border-warning/30">
+                <div className="text-sm text-warning mb-2">⚠️ Payroll Alert</div>
+                <p className="text-white text-sm">
+                  {duePayeesCount} payee{duePayeesCount > 1 ? 's' : ''} due for payment
+                </p>
+                <p className="text-gray-400 text-xs mt-1">
+                  Total required: ${totalMonthlyPayrollUSD} USDC
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
 
         {/* Owner Warning */}
         {!isUserContractOwner && (
@@ -996,6 +1288,31 @@ export default function PayrollPage() {
                     {automationEnabled ? 'Automation active - monitoring for due payments' : 'Automation paused'}
                   </span>
                 </div>
+                
+                {/* Payroll Requirements */}
+                <div className="mt-4 p-3 bg-gray-900/50 rounded-lg">
+                  <h4 className="text-sm font-medium text-gray-300 mb-2">Payroll Requirements:</h4>
+                  <ul className="text-xs text-gray-400 space-y-1">
+                    <li className="flex items-center">
+                      <CheckCircle className={`h-3 w-3 mr-2 ${isUserContractOwner ? 'text-success' : 'text-error'}`} />
+                      Must be contract owner: {isUserContractOwner ? '✓' : '✗'}
+                    </li>
+                    <li className="flex items-center">
+                      <CheckCircle className={`h-3 w-3 mr-2 ${duePayeesCount > 0 ? 'text-success' : 'text-error'}`} />
+                      Due payees available: {duePayeesCount} {duePayeesCount > 0 ? '✓' : '✗'}
+                    </li>
+                    <li className="flex items-center">
+                      <CheckCircle className={`h-3 w-3 mr-2 ${
+                        parseFloat(treasuryBalance) >= parseFloat(totalMonthlyPayrollUSD) ? 'text-success' : 'text-error'
+                      }`} />
+                      Treasury balance sufficient: {parseFloat(treasuryBalance) >= parseFloat(totalMonthlyPayrollUSD) ? '✓' : '✗'}
+                    </li>
+                    <li className="flex items-center">
+                      <CheckCircle className="h-3 w-3 mr-2 text-blue-400" />
+                      <span className="text-blue-400">Note: Manual trigger ignores revenue threshold</span>
+                    </li>
+                  </ul>
+                </div>
               </div>
             </div>
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto">
@@ -1022,8 +1339,11 @@ export default function PayrollPage() {
               
               <button
                 onClick={triggerPayroll}
-                disabled={loading || activePayees.length === 0 || x402Processing || !isUserContractOwner}
+                disabled={loading || duePayeesCount === 0 || x402Processing || !isUserContractOwner || parseFloat(treasuryBalance) < parseFloat(totalMonthlyPayrollUSD)}
                 className="px-4 py-3 rounded-lg bg-gradient-to-r from-primary-500 to-primary-600 text-white font-semibold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-all min-w-[160px]"
+                title={!isUserContractOwner ? 'Only contract owner can trigger payroll' : 
+                       duePayeesCount === 0 ? 'No payees due for payment' : 
+                       parseFloat(treasuryBalance) < parseFloat(totalMonthlyPayrollUSD) ? 'Insufficient treasury balance' : ''}
               >
                 {loading || x402Processing ? (
                   <>
@@ -1042,6 +1362,7 @@ export default function PayrollPage() {
                 onClick={() => setShowAddPayee(true)}
                 disabled={!isUserContractOwner}
                 className="px-4 py-3 rounded-lg bg-gradient-to-r from-secondary-500 to-secondary-600 text-white font-semibold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-all min-w-[140px]"
+                title={!isUserContractOwner ? 'Only contract owner can add payees' : ''}
               >
                 <Plus className="h-5 w-5" />
                 Add Payee
@@ -1055,7 +1376,7 @@ export default function PayrollPage() {
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
             <h2 className="text-xl font-semibold text-white">Active Payees</h2>
             <div className="text-sm text-gray-400">
-              {activePayees.length} payee(s) • {activePayees.filter(p => isPayeeDue(p)).length} due for payment
+              {activePayees.length} payee(s) • {duePayeesCount} due for payment • Total monthly: ${totalMonthlyPayrollUSD}
             </div>
           </div>
           {loading ? (
@@ -1095,6 +1416,7 @@ export default function PayrollPage() {
                   {activePayees.map((payee, index) => {
                     const isProcessing = processingPayments.includes(payee.address);
                     const isDue = isPayeeDue(payee);
+                    const hasSufficientBalance = parseFloat(treasuryBalance) >= parseFloat(formatSalary(payee.salary));
                     
                     return (
                       <tr key={index} className="hover:bg-gray-800/30">
@@ -1157,8 +1479,9 @@ export default function PayrollPage() {
                         <td className="p-3">
                           <button
                             onClick={() => processSinglePayment(payee)}
-                            disabled={isProcessing || !isDue}
+                            disabled={isProcessing || !isDue || !hasSufficientBalance}
                             className="px-3 py-1 text-sm rounded-lg bg-primary-500/20 text-primary-400 hover:bg-primary-500/30 disabled:opacity-50 disabled:cursor-not-allowed border border-primary-500/30 flex items-center gap-1"
+                            title={!isDue ? 'Not due for payment' : !hasSufficientBalance ? 'Insufficient treasury balance' : ''}
                           >
                             {isProcessing ? (
                               <>
@@ -1188,7 +1511,7 @@ export default function PayrollPage() {
             <h2 className="text-xl font-semibold text-white">Revenue Threshold Settings</h2>
             <button
               onClick={() => {
-                toast('Set the minimum treasury balance required to trigger automated payroll', {
+                toast('Set the minimum treasury balance required to trigger automated payroll. Only contract owner can update this.', {
                   duration: 4000,
                 })
               }}
@@ -1226,6 +1549,7 @@ export default function PayrollPage() {
                   onClick={handleUpdateThreshold}
                   disabled={updatingThreshold || !isUserContractOwner}
                   className="px-6 py-2 rounded-lg bg-primary-500 text-white hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors min-w-[120px]"
+                  title={!isUserContractOwner ? 'Only contract owner can update threshold' : 'Update threshold on blockchain'}
                 >
                   {updatingThreshold ? (
                     <>
@@ -1233,24 +1557,27 @@ export default function PayrollPage() {
                       Updating...
                     </>
                   ) : (
-                    'Update'
+                    'Update on Chain'
                   )}
                 </button>
               </div>
               <p className="text-sm text-gray-400 mt-2">
-                Payroll will automatically trigger when treasury balance exceeds this amount
+                Payroll automation will trigger when treasury balance exceeds this amount
                 {!isUserContractOwner && (
                   <span className="text-yellow-400 block mt-1">
-                    Only contract owner can update threshold
+                    ⚠️ Only contract owner can update threshold
                   </span>
                 )}
               </p>
               
-              {error && (
+              {/* Show threshold-specific errors here */}
+              {error && error.toLowerCase().includes('threshold') && (
                 <div className="mt-2 p-2 bg-error/10 border border-error/30 rounded-lg">
                   <div className="flex items-center">
+                    {/*
                     <AlertCircle className="h-4 w-4 text-error mr-2" />
                     <div className="text-error text-sm">{error}</div>
+                    */}
                   </div>
                 </div>
               )}
@@ -1267,7 +1594,19 @@ export default function PayrollPage() {
                 <li>• Prevents frequent small transactions (saves gas)</li>
                 <li>• Recommended: Set to 2-3x monthly payroll amount</li>
                 <li className="text-blue-400">
-                  • Current: ${revenueThreshold} USDC ({parseUnits(revenueThreshold, 6).toLocaleString()} base units)
+                  • Current threshold: ${revenueThreshold} USDC ({parseUnits(revenueThreshold, 6).toLocaleString()} base units)
+                </li>
+                <li className="text-warning">
+                  • Monthly payroll: ${totalMonthlyPayrollUSD} USDC
+                </li>
+                <li className={`${parseFloat(treasuryBalance) >= parseFloat(revenueThreshold) ? 'text-success' : 'text-error'}`}>
+                  • Treasury status: ${treasuryBalance} USDC ({parseFloat(treasuryBalance) >= parseFloat(revenueThreshold) ? 'Above' : 'Below'} threshold)
+                </li>
+                <li className="text-yellow-400">
+                  • Manual trigger ignores threshold, automation requires it
+                </li>
+                <li className="text-green-400">
+                  • Click "Update on Chain" to save changes to blockchain
                 </li>
               </ul>
             </div>

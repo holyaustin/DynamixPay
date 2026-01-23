@@ -11,9 +11,21 @@ const TREASURY_ABI = parseAbi([
   'function getPayee(address payee) view returns (uint256 salary, uint256 lastPayment, uint256 accrued, bool active)'
 ]);
 
+// FIXED: Use Tatum RPC URL with proper configuration
 const publicClient = createPublicClient({
   chain: cronosTestnet,
-  transport: http(process.env.NEXT_PUBLIC_CRONOS_RPC || 'https://evm-t3.cronos.org')
+  transport: http(process.env.NEXT_PUBLIC_CRONOS_RPC || 'https://cro-testnet.gateway.tatum.io', {
+    timeout: 15000, // 15 second timeout
+    retryCount: 3, // Retry up to 3 times
+    retryDelay: 1000, // 1 second delay between retries
+    // Tatum might require specific headers
+    fetchOptions: {
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      }
+    }
+  })
 });
 
 export async function GET(request: NextRequest) {
@@ -104,13 +116,24 @@ export async function GET(request: NextRequest) {
       }
     } else {
       // If no requestId, verify payee exists and is active in treasury
+      // FIXED: Add better error handling for RPC failures
       try {
-        const payeeData = await publicClient.readContract({
+        console.log(`Attempting to verify payee ${payee} on RPC: https://cro-testnet.gateway.tatum.io`);
+        
+        // Add timeout wrapper for the RPC call
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('RPC timeout after 10 seconds')), 10000);
+        });
+
+        const payeeDataPromise = publicClient.readContract({
           address: CONTRACTS.TREASURY_MANAGER as `0x${string}`,
           abi: TREASURY_ABI,
           functionName: 'getPayee',
           args: [payee as `0x${string}`]
-        }) as [bigint, bigint, bigint, boolean];
+        }) as Promise<[bigint, bigint, bigint, boolean]>;
+
+        // Race between the RPC call and timeout
+        const payeeData = await Promise.race([payeeDataPromise, timeoutPromise]) as [bigint, bigint, bigint, boolean];
 
         const [salary, , , active] = payeeData;
 
@@ -129,9 +152,23 @@ export async function GET(request: NextRequest) {
             error: 'Payee has invalid salary amount'
           }, { status: 400 });
         }
+
+        console.log(`Payee ${payee} verified successfully (active: ${active}, salary: ${salaryBigInt})`);
+
       } catch (error: any) {
-        console.error('Payee validation error:', error);
-        // Don't fail if we can't verify payee - maybe it's a manual payment
+        // FIXED: Don't fail the entire request if RPC is unavailable
+        console.warn('Payee validation RPC error (proceeding as manual payment):', {
+          error: error.message,
+          payee,
+          amount,
+          timestamp: new Date().toISOString()
+        });
+        
+        // Log warning but proceed - this allows manual payments to work even when RPC is down
+        // The x402 payment itself will validate the transaction on-chain
+        
+        // Add to logs for debugging
+        console.log(`Proceeding with manual payment for ${payee} despite RPC validation failure`);
       }
     }
 
@@ -178,7 +215,9 @@ export async function GET(request: NextRequest) {
           timestamp: new Date().toISOString(),
           paymentType: 'payroll',
           validBefore: validBefore,
-          originalPayee: payee // Store original payee for contract updates
+          originalPayee: payee, // Store original payee for contract updates
+          // Add RPC status for debugging
+          rpcValidation: requestId ? 'validated' : 'skipped-or-failed'
         }
       }]
     }, { status: 402 }); // MUST return 402 status

@@ -1,0 +1,1 @@
+What are the preconditions that must be met before the payment routing is successful? the contract has sufficient funds in USDC and native gas token. I am  accessing with admin wallet. the project confirm 3 payment due from UI. What exactly is this threshold. is it a constant value? 
