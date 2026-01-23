@@ -1,16 +1,14 @@
-// app/dashboard/page.tsx
+// app/dashboard/page.tsx - COMPLETE FIXED VERSION
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
 import { usePrivy } from '@privy-io/react-auth'
 import { Container } from '@/components/layout/Container'
-import TreasuryMetrics from '@/components/dashboard/TreasuryMetrics'
-import PayeeTable from '@/components/dashboard/PayeeTable'
 import { ConnectButton } from '@/components/wallet/ConnectButton'
 import { 
   DollarSign, Users, TrendingUp, Clock, Plus, 
   Settings, Play, Bell, Wallet, RefreshCw, Activity,
-  ExternalLink
+  ExternalLink, AlertCircle, CheckCircle, Loader2
 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { 
@@ -23,15 +21,15 @@ import {
   Payee,
   getRevenueThreshold,
   shouldTriggerPayroll,
-  getPaymentRequest
+  getPaymentRequest,
+  formatUSDC
 } from '@/lib/blockchain/treasury'
 import { getBalance } from '@/lib/blockchain/ethers-utils'
-import { treasuryEventListener } from '@/lib/blockchain/event-listener'
 import { transactionStore, Transaction } from '@/lib/storage/transaction-store'
-import { EnhancedErrorHandler, withGlobalErrorHandling } from '@/lib/utils/error-handler'
 import { CONTRACTS } from '@/config/contracts'
 import toast from 'react-hot-toast'
-import { X402PaymentFlow, PaymentChallenge } from '@/lib/x402/payment-flow'
+import { X402PaymentFlow } from '@/lib/x402/payment-flow'
+import { ethers } from 'ethers'
 
 interface DashboardData {
   treasuryBalance: bigint
@@ -45,6 +43,201 @@ interface DashboardData {
   lastUpdated: Date
 }
 
+// Payment result interface
+interface PaymentResult {
+  success: boolean;
+  paymentId?: string;
+  txHash?: string;
+  error?: string;
+  alreadyPaid?: boolean;
+  data?: any;
+}
+
+// Metrics Card Component
+const TreasuryMetrics = ({ 
+  title, 
+  value, 
+  change, 
+  icon, 
+  loading = false,
+  status = 'normal'
+}: {
+  title: string;
+  value: string;
+  change?: string;
+  icon: React.ReactNode;
+  loading?: boolean;
+  status?: 'normal' | 'success' | 'warning' | 'error' | 'pending';
+}) => {
+  const statusColors = {
+    normal: 'border-gray-700',
+    success: 'border-green-500',
+    warning: 'border-yellow-500',
+    error: 'border-red-500',
+    pending: 'border-blue-500'
+  };
+
+  const statusIcons = {
+    normal: null,
+    success: <CheckCircle className="h-4 w-4 text-green-500" />,
+    warning: <AlertCircle className="h-4 w-4 text-yellow-500" />,
+    error: <AlertCircle className="h-4 w-4 text-red-500" />,
+    pending: <Clock className="h-4 w-4 text-blue-500" />
+  };
+
+  return (
+    <div className={`bg-black/40 backdrop-blur-sm rounded-2xl p-6 border ${statusColors[status]} transition-all hover:scale-[1.02]`}>
+      <div className="flex items-start justify-between mb-4">
+        <div className="p-3 rounded-xl bg-primary-500/20">
+          {icon}
+        </div>
+        {statusIcons[status] && (
+          <div className="p-1">
+            {statusIcons[status]}
+          </div>
+        )}
+      </div>
+      <div className="space-y-2">
+        <h3 className="text-sm font-medium text-gray-400">{title}</h3>
+        {loading ? (
+          <div className="h-8 w-32 bg-gray-800 rounded animate-pulse"></div>
+        ) : (
+          <div className="text-2xl font-bold text-white">{value}</div>
+        )}
+        {change && (
+          <div className="text-sm text-gray-400">{change}</div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// Payee Table Component
+const PayeeTable = ({ 
+  payees, 
+  loading,
+  onSendPayment,
+  onEditDetails
+}: {
+  payees: Payee[];
+  loading: boolean;
+  onSendPayment: (address: string) => void;
+  onEditDetails: (address: string) => void;
+}) => {
+  if (loading) {
+    return (
+      <div className="p-8 text-center">
+        <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500"></div>
+        <p className="mt-2 text-gray-400">Loading payees...</p>
+      </div>
+    );
+  }
+
+  if (payees.length === 0) {
+    return (
+      <div className="p-8 text-center">
+        <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gray-800 flex items-center justify-center">
+          <Users className="h-8 w-8 text-gray-400" />
+        </div>
+        <h3 className="text-lg font-semibold text-white mb-2">No Active Payees</h3>
+        <p className="text-gray-400 mb-4">Add payees to start managing payroll</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full">
+        <thead className="bg-gray-900/50">
+          <tr>
+            <th className="text-left p-4 text-gray-300 font-medium">Address</th>
+            <th className="text-left p-4 text-gray-300 font-medium">Salary</th>
+            <th className="text-left p-4 text-gray-300 font-medium hidden md:table-cell">Last Paid</th>
+            <th className="text-left p-4 text-gray-300 font-medium">Accrued</th>
+            <th className="text-left p-4 text-gray-300 font-medium">Status</th>
+            <th className="text-left p-4 text-gray-300 font-medium">Actions</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-800">
+          {payees.map((payee, index) => {
+            const isDue = new Date(payee.lastPayment).getTime() < Date.now() - (30 * 24 * 60 * 60 * 1000);
+            const isNew = new Date(payee.lastPayment).getFullYear() === 1970;
+            
+            return (
+              <tr key={index} className="hover:bg-gray-800/30">
+                <td className="p-4">
+                  <div className="font-mono text-sm text-white">
+                    {payee.address.substring(0, 8)}...{payee.address.substring(payee.address.length - 6)}
+                  </div>
+                  <a
+                    href={`https://explorer.cronos.org/testnet/address/${payee.address}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center text-xs text-gray-400 hover:text-primary-400 mt-1"
+                  >
+                    View on explorer
+                    <ExternalLink className="ml-1 h-3 w-3" />
+                  </a>
+                </td>
+                <td className="p-4">
+                  <div className="font-semibold text-white">
+                    ${formatUSDC(payee.salary)}
+                  </div>
+                  <div className="text-xs text-gray-400">Monthly</div>
+                </td>
+                <td className="p-4 hidden md:table-cell">
+                  <div className="text-gray-300">
+                    {isNew ? 'Never' : new Date(payee.lastPayment).toLocaleDateString()}
+                  </div>
+                  {isDue && !isNew && (
+                    <div className="text-xs text-yellow-400">Overdue</div>
+                  )}
+                </td>
+                <td className="p-4">
+                  <div className="text-gray-300">
+                    ${formatUSDC(payee.accrued)}
+                  </div>
+                </td>
+                <td className="p-4">
+                  {isNew ? (
+                    <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-blue-900/30 text-blue-400 border border-blue-800">
+                      New
+                    </span>
+                  ) : isDue ? (
+                    <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-yellow-900/30 text-yellow-400 border border-yellow-800">
+                      Due
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-900/30 text-green-400 border border-green-800">
+                      Active
+                    </span>
+                  )}
+                </td>
+                <td className="p-4">
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => onSendPayment(payee.address)}
+                      className="px-3 py-1 text-sm rounded-lg bg-primary-500/20 text-primary-400 hover:bg-primary-500/30 border border-primary-500/30"
+                    >
+                      Pay
+                    </button>
+                    <button
+                      onClick={() => onEditDetails(payee.address)}
+                      className="px-3 py-1 text-sm rounded-lg bg-gray-800 text-gray-300 hover:bg-gray-700 border border-gray-700"
+                    >
+                      Edit
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
 export default function DashboardPage() {
   const { authenticated, user, ready } = usePrivy()
   const router = useRouter()
@@ -56,32 +249,7 @@ export default function DashboardPage() {
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [lastUpdateTime, setLastUpdateTime] = useState<Date>(new Date())
   const [pendingTransactions, setPendingTransactions] = useState(0)
-  const [isEventListenerActive, setIsEventListenerActive] = useState(false)
   const [userFundedAmount, setUserFundedAmount] = useState<string>('0.00')
-
-  // Initialize event listener
-  useEffect(() => {
-    if (authenticated) {
-      treasuryEventListener.start()
-      setIsEventListenerActive(true)
-      
-      // Subscribe to all events
-      const unsubscribe = treasuryEventListener.subscribe('*', (eventData: any) => {
-        console.log('Dashboard received event:', eventData)
-        
-        // Auto-refresh on relevant events
-        if (['PayeeAdded', 'PaymentRequestCreated', 'PaymentSettled', 'PayrollTriggered'].includes(eventData.event)) {
-          fetchDashboardData()
-        }
-      })
-      
-      return () => {
-        unsubscribe()
-        treasuryEventListener.stop()
-        setIsEventListenerActive(false)
-      }
-    }
-  }, [authenticated])
 
   // Subscribe to transaction store updates
   useEffect(() => {
@@ -94,111 +262,119 @@ export default function DashboardPage() {
   }, [])
 
   const fetchDashboardData = useCallback(async (): Promise<void> => {
-    await withGlobalErrorHandling(async () => {
-      setLoading(true)
-      setError(null)
-
-      // Fetch treasury balance first separately
-      const treasuryBalance = await EnhancedErrorHandler.withRetry(() => getTreasuryBalance(), {
-        maxAttempts: 3,
-        baseDelay: 1000,
-        shouldRetry: EnhancedErrorHandler.isNetworkError
-      })
-
-      // Now fetch other data in parallel
-      const [payeesData, totalAccrued, userBalanceResult, revenueThreshold, shouldTriggerResult] = await Promise.all([
-        EnhancedErrorHandler.withRetry(() => getActivePayees(), {
-          maxAttempts: 3,
-          baseDelay: 1000,
-          shouldRetry: EnhancedErrorHandler.isNetworkError
-        }),
-        EnhancedErrorHandler.withRetry(() => getTotalAccrued(), {
-          maxAttempts: 3,
-          baseDelay: 1000,
-          shouldRetry: EnhancedErrorHandler.isNetworkError
-        }),
-        user?.wallet?.address ? getBalance(user.wallet.address) : Promise.resolve('0.00'),
-        EnhancedErrorHandler.withRetry(() => getRevenueThreshold(), {
-          maxAttempts: 3,
-          baseDelay: 1000,
-          shouldRetry: EnhancedErrorHandler.isNetworkError
-        }),
-        EnhancedErrorHandler.withRetry(async () => {
-          // Explicitly convert to boolean
-          const triggerResult = await shouldTriggerPayroll(treasuryBalance)
-          return Boolean(triggerResult) // Ensure it's a boolean
-        }, {
-          maxAttempts: 3,
-          baseDelay: 1000,
-          shouldRetry: EnhancedErrorHandler.isNetworkError
-        })
-      ])
-      
-      // Filter out the first two payees (system payees) and only show payees added by current user
-      const filteredPayees = payeesData.slice(2).filter(payee => 
-        payee.active // Only active payees
-      )
-      
-      const duePayeesCount = calculateDuePayees(filteredPayees)
-      const totalMonthlyOutflow = calculateTotalMonthlyOutflow(filteredPayees)
-
-      setData({
-        treasuryBalance,
-        payees: filteredPayees,
-        totalAccrued,
-        totalMonthlyOutflow,
-        duePayeesCount,
-        userBalance: userBalanceResult as string,
-        revenueThreshold,
-        shouldTrigger: Boolean(shouldTriggerResult), // Ensure boolean type
-        lastUpdated: new Date()
-      })
-      
-      setUserWalletBalance(userBalanceResult as string)
-      setLastUpdateTime(new Date())
-      
-      // Fetch user funded amount
-      fetchUserFundedAmount()
-    }, 'fetchDashboardData')()
-  }, [user])
-
-  const fetchUserFundedAmount = async () => {
-    if (!user?.wallet?.address) return
+    if (!authenticated || !user?.wallet?.address) return;
     
     try {
-      // For now, use a mock value - in production, query contract events
-      // to calculate total amount funded by this user
-      setUserFundedAmount('500.00') // Example: $500 funded
-    } catch (error) {
-      console.error('Failed to fetch user funded amount:', error)
+      setLoading(true);
+      setError(null);
+
+      console.log('Fetching dashboard data...');
+
+      // Fetch all data in parallel with error handling
+      const [
+        treasuryBalance,
+        payeesData,
+        totalAccrued,
+        userBalanceResult,
+        revenueThreshold,
+        shouldTriggerResult
+      ] = await Promise.allSettled([
+        getTreasuryBalance(),
+        getActivePayees(),
+        getTotalAccrued(),
+        getBalance(user.wallet.address),
+        getRevenueThreshold(),
+        getTreasuryBalance().then(balance => shouldTriggerPayroll(balance))
+      ]);
+
+      console.log('Data fetched:', {
+        treasuryBalance,
+        payeesData,
+        totalAccrued,
+        userBalanceResult,
+        revenueThreshold,
+        shouldTriggerResult
+      });
+
+      // Handle results
+      const treasuryBalanceValue = treasuryBalance.status === 'fulfilled' ? treasuryBalance.value : BigInt(0);
+      const payeesDataValue = payeesData.status === 'fulfilled' ? payeesData.value : [];
+      const totalAccruedValue = totalAccrued.status === 'fulfilled' ? totalAccrued.value : BigInt(0);
+      const userBalanceValue = userBalanceResult.status === 'fulfilled' ? userBalanceResult.value : '0.00';
+      const revenueThresholdValue = revenueThreshold.status === 'fulfilled' ? revenueThreshold.value : BigInt(0);
+      const shouldTriggerValue = shouldTriggerResult.status === 'fulfilled' ? shouldTriggerResult.value : false;
+
+      // Filter out the first two payees (system payees)
+      const filteredPayees = payeesDataValue.slice(2);
+      
+      const duePayeesCount = calculateDuePayees(filteredPayees);
+      const totalMonthlyOutflow = calculateTotalMonthlyOutflow(filteredPayees);
+
+      console.log('Processed data:', {
+        filteredPayees: filteredPayees.length,
+        duePayeesCount,
+        totalMonthlyOutflow: totalMonthlyOutflow.toString()
+      });
+
+      setData({
+        treasuryBalance: treasuryBalanceValue,
+        payees: filteredPayees,
+        totalAccrued: totalAccruedValue,
+        totalMonthlyOutflow,
+        duePayeesCount,
+        userBalance: userBalanceValue as string,
+        revenueThreshold: revenueThresholdValue,
+        shouldTrigger: Boolean(shouldTriggerValue),
+        lastUpdated: new Date()
+      });
+      
+      setUserWalletBalance(userBalanceValue as string);
+      setLastUpdateTime(new Date());
+      
+      // Fetch user funded amount
+      if (user?.wallet?.address) {
+        try {
+          // For now, use a mock value - in production, query contract events
+          setUserFundedAmount('500.00'); // Example: $500 funded
+        } catch (error) {
+          console.error('Failed to fetch user funded amount:', error);
+        }
+      }
+
+    } catch (error: any) {
+      console.error('Failed to fetch dashboard data:', error);
+      setError(error.message || 'Failed to load dashboard data');
+      toast.error('Failed to load dashboard data');
+    } finally {
+      setLoading(false);
     }
-  }
+  }, [authenticated, user]);
 
   // Helper function to process x402 payment
   const processX402Payment = async (
     challengeUrl: string,
     signer: any,
     requestId?: string
-  ): Promise<{ success: boolean; paymentId?: string; txHash?: string; error?: string }> => {
+  ): Promise<PaymentResult> => {
     try {
       // Fetch challenge from API
       const response = await fetch(challengeUrl);
       
       if (response.status === 402) {
-        const challenge: PaymentChallenge = await response.json();
+        const challenge = await response.json();
         
         const toastId = toast.loading('Processing x402 payment...');
         
         const result = await X402PaymentFlow.processPaymentChallenge(challenge, signer);
         
-        if (result.error) {
+        if (result.error || !result.txHash) {
           toast.error(`Payment failed: ${result.error}`, { id: toastId });
           return { success: false, error: result.error };
         }
         
         toast.success('Payment settled successfully!', { id: toastId });
         
-        // Update contract status via webhook
+        // Update contract status via webhook if requestId exists
         if (requestId) {
           await fetch('/api/x402/webhook', {
             method: 'POST',
@@ -220,8 +396,23 @@ export default function DashboardPage() {
           paymentId: result.paymentId, 
           txHash: result.txHash 
         };
+      } else if (response.ok) {
+        const data = await response.json();
+        if (data.alreadyPaid || data.settled) {
+          toast.success('Payment already completed!');
+          return { 
+            success: true, 
+            alreadyPaid: true,
+            data: data
+          };
+        }
+        // Return any other successful response
+        return { 
+          success: true, 
+          data: data 
+        };
       } else {
-        throw new Error('Unexpected response from challenge endpoint');
+        throw new Error(`Unexpected response: ${response.status}`);
       }
     } catch (error: any) {
       console.error('x402 payment error:', error);
@@ -239,14 +430,14 @@ export default function DashboardPage() {
     if (authenticated) {
       fetchDashboardData()
       
-      // Set up polling for updates (as backup to event listener)
+      // Set up polling for updates
       const pollInterval = setInterval(fetchDashboardData, 60000) // 1 minute
       
       return () => clearInterval(pollInterval)
     }
   }, [authenticated, ready, router, fetchDashboardData])
 
-  const triggerPayroll = withGlobalErrorHandling(async (): Promise<void> => {
+  const triggerPayroll = async (): Promise<void> => {
     if (!user) {
       toast.error('Please connect your wallet');
       return;
@@ -255,15 +446,13 @@ export default function DashboardPage() {
     setPayrollLoading(true);
 
     try {
-      const provider = await (window as any).ethereum;
-      if (!provider) {
+      if (!window.ethereum) {
         throw new Error('No wallet provider found');
       }
       
       // Create ethers provider and signer
-      const ethers = await import('ethers');
-      const ethersProvider = new ethers.BrowserProvider(provider);
-      const signer = await ethersProvider.getSigner();
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
       const userAddress = await signer.getAddress();
       
       // Track transaction
@@ -293,7 +482,7 @@ export default function DashboardPage() {
         // Process x402 payments for each request
         if (result.requestIds && result.requestIds.length > 0) {
           const paymentsPromises = result.requestIds.map(async (requestIdBigInt) => {
-            const requestId = requestIdBigInt.toString(); // Convert bigint to string
+            const requestId = requestIdBigInt.toString();
             
             try {
               // Get payment request details from contract
@@ -307,7 +496,12 @@ export default function DashboardPage() {
                 const paymentResult = await processX402Payment(challengeUrl, signer, requestId);
                 
                 if (paymentResult.success) {
-                  toast.success(`Payment completed for ${paymentRequest.payee.substring(0, 10)}...`);
+                  // Check if already paid
+                  if (paymentResult.alreadyPaid) {
+                    toast.success(`Payment already completed for ${paymentRequest.payee.substring(0, 10)}...`);
+                  } else {
+                    toast.success(`Payment completed for ${paymentRequest.payee.substring(0, 10)}...`);
+                  }
                   return { success: true, requestId };
                 } else {
                   toast.error(`Payment failed for request ${requestId}`);
@@ -350,11 +544,11 @@ export default function DashboardPage() {
       }
       
       toast.error(`Payroll trigger failed: ${error.message}`);
-      throw error;
+      console.error('Payroll trigger error:', error);
     } finally {
       setPayrollLoading(false);
     }
-  }, 'triggerPayroll');
+  };
 
   const refreshData = async (): Promise<void> => {
     setIsRefreshing(true);
@@ -387,24 +581,27 @@ export default function DashboardPage() {
     }
     
     try {
-      const provider = await (window as any).ethereum;
-      if (!provider) {
+      if (!window.ethereum) {
         throw new Error('No wallet provider found');
       }
       
-      const ethers = await import('ethers');
-      const ethersProvider = new ethers.BrowserProvider(provider);
-      const signer = await ethersProvider.getSigner();
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
       
-      // For manual payments, use a fixed amount or prompt user
-      const amount = "1000000"; // 1 USDC in base units (6 decimals)
+      // For manual payments, use a fixed amount or get from payee data
+      const payee = data?.payees.find(p => p.address === payeeAddress);
+      const amount = payee?.salary || "1000000"; // Default to 1 USDC
       const challengeUrl = `/api/x402/challenge?payee=${payeeAddress}&amount=${amount}&description=Manual+Payment`;
       
       toast.loading('Processing manual payment...');
       const result = await processX402Payment(challengeUrl, signer);
       
       if (result.success) {
-        toast.success('Manual payment completed successfully!');
+        if (result.alreadyPaid) {
+          toast.success('Payment was already completed!');
+        } else {
+          toast.success('Manual payment completed successfully!');
+        }
         await fetchDashboardData(); // Refresh data
       } else {
         toast.error(`Manual payment failed: ${result.error}`);
@@ -443,12 +640,14 @@ export default function DashboardPage() {
       <Container>
         <div className="py-8">
           <div className="animate-pulse">
-            <div className="h-8 bg-gray-800 rounded w-1/4 mb-4"></div>
+            <div className="h-8 bg-gray-800 rounded w-1/4 mb-8"></div>
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
               {[...Array(4)].map((_, i) => (
                 <div key={i} className="h-32 bg-gray-800 rounded-xl"></div>
               ))}
             </div>
+            <div className="h-64 bg-gray-800 rounded-xl mb-8"></div>
+            <div className="h-32 bg-gray-800 rounded-xl"></div>
           </div>
         </div>
       </Container>
@@ -460,7 +659,10 @@ export default function DashboardPage() {
       <Container>
         <div className="py-8">
           <div className="p-4 bg-error/10 border border-error/30 rounded-lg mb-4">
-            <div className="text-error">{error}</div>
+            <div className="flex items-center">
+              <AlertCircle className="h-5 w-5 text-error mr-2" />
+              <div className="text-error">{error}</div>
+            </div>
           </div>
           <button
             onClick={fetchDashboardData}
@@ -473,12 +675,19 @@ export default function DashboardPage() {
     )
   }
 
-  const formattedTreasuryBalance = data ? Number(data.treasuryBalance) / 1_000_000 : 0
-  const formattedTotalMonthlyOutflow = data ? Number(data.totalMonthlyOutflow) / 1_000_000 : 0
-  const formattedTotalAccrued = data ? Number(data.totalAccrued) / 1_000_000 : 0
-  const duePayeesCount = data?.duePayeesCount || 0
-  const formattedRevenueThreshold = data ? Number(data.revenueThreshold) / 1_000_000 : 0
-  const shouldTriggerPayrollValue = data?.shouldTrigger || false
+  // Calculate formatted values
+  const formattedTreasuryBalance = data ? formatUSDC(data.treasuryBalance) : '0.00';
+  const formattedTotalMonthlyOutflow = data ? formatUSDC(data.totalMonthlyOutflow) : '0.00';
+  const formattedTotalAccrued = data ? formatUSDC(data.totalAccrued) : '0.00';
+  const duePayeesCount = data?.duePayeesCount || 0;
+  const formattedRevenueThreshold = data ? formatUSDC(data.revenueThreshold) : '0.00';
+  const shouldTriggerPayrollValue = data?.shouldTrigger || false;
+  const payeesCount = data?.payees.length || 0;
+
+  // Determine status for metrics
+  const treasuryStatus = data && data.treasuryBalance > data.revenueThreshold ? 'success' : 'warning';
+  const payeesStatus = duePayeesCount > 0 ? 'warning' : 'normal';
+  const accruedStatus = data && data.totalAccrued > 0 ? 'pending' : 'normal';
 
   return (
     <Container>
@@ -490,16 +699,10 @@ export default function DashboardPage() {
               <div className="flex items-center gap-3 mb-2">
                 <h1 className="text-3xl font-bold text-white">Treasury Dashboard</h1>
                 <div className="flex items-center gap-2">
-                  {isEventListenerActive && (
-                    <div className="flex items-center gap-1">
-                      <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-                      <span className="text-xs text-green-400">Live</span>
-                    </div>
-                  )}
                   <button
                     onClick={refreshData}
                     disabled={isRefreshing}
-                    className="p-1.5 rounded-lg bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
+                    className="p-1.5 rounded-lg bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors disabled:opacity-50"
                   >
                     <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
                   </button>
@@ -562,45 +765,45 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Metrics Grid */}
+        {/* Metrics Grid - FIXED with actual data */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <TreasuryMetrics
             title="Treasury Balance"
-            value={`$${formattedTreasuryBalance.toFixed(2)}`}
-            change={formattedTreasuryBalance > formattedRevenueThreshold ? 'Above Threshold' : 'Below Threshold'}
-            icon={<DollarSign className="h-5 w-5" />}
+            value={`$${formattedTreasuryBalance}`}
+            change={data && data.treasuryBalance > data.revenueThreshold ? 'Above Threshold' : 'Below Threshold'}
+            icon={<DollarSign className="h-5 w-5 text-primary-400" />}
             loading={loading}
-            status={formattedTreasuryBalance > formattedRevenueThreshold ? 'success' : 'warning'}
+            status={treasuryStatus}
           />
           
           <TreasuryMetrics
             title="Active Payees"
-            value={data?.payees.length.toString() || '0'}
-            change={duePayeesCount > 0 ? `${duePayeesCount} due` : undefined}
-            icon={<Users className="h-5 w-5" />}
+            value={payeesCount.toString()}
+            change={duePayeesCount > 0 ? `${duePayeesCount} due` : 'All up to date'}
+            icon={<Users className="h-5 w-5 text-blue-400" />}
             loading={loading}
-            status={duePayeesCount > 0 ? 'warning' : 'normal'}
+            status={payeesStatus}
           />
           
           <TreasuryMetrics
             title="Monthly Outflow"
-            value={`$${formattedTotalMonthlyOutflow.toFixed(2)}`}
-            change="Excl. system payees"
-            icon={<TrendingUp className="h-5 w-5" />}
+            value={`$${formattedTotalMonthlyOutflow}`}
+            change="Estimated monthly"
+            icon={<TrendingUp className="h-5 w-5 text-purple-400" />}
             loading={loading}
           />
           
           <TreasuryMetrics
             title="Total Accrued"
-            value={`$${formattedTotalAccrued.toFixed(2)}`}
-            change="Unpaid"
-            icon={<Clock className="h-5 w-5" />}
+            value={`$${formattedTotalAccrued}`}
+            change="Unpaid balance"
+            icon={<Clock className="h-5 w-5 text-yellow-400" />}
             loading={loading}
-            status="pending"
+            status={accruedStatus}
           />
         </div>
 
-        {/* Actions - Fixed for responsive layout */}
+        {/* Actions */}
         <div className="mb-8 p-6 bg-black/40 backdrop-blur-sm rounded-2xl border border-gray-800">
           <div className="flex flex-col lg:flex-row justify-between items-center gap-6">
             <div className="flex-1">
@@ -611,7 +814,7 @@ export default function DashboardPage() {
               <div className="flex items-center gap-2 mt-2">
                 <div className="text-xs text-gray-400">Revenue Threshold:</div>
                 <div className="text-sm font-semibold text-white">
-                  ${formattedRevenueThreshold.toFixed(2)} USDC.e
+                  ${formattedRevenueThreshold} USDC.e
                 </div>
                 <a
                   href={`https://explorer.cronos.org/testnet/address/${CONTRACTS.TREASURY_MANAGER}`}
@@ -627,12 +830,12 @@ export default function DashboardPage() {
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto">
               <button
                 onClick={triggerPayroll}
-                disabled={payrollLoading || duePayeesCount === 0}
+                disabled={payrollLoading || payeesCount === 0}
                 className="px-4 py-3 rounded-lg bg-gradient-to-r from-primary-500 to-primary-600 text-white font-semibold hover:from-primary-600 hover:to-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
               >
                 {payrollLoading ? (
                   <>
-                    <div className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    <Loader2 className="h-4 w-4 animate-spin" />
                     Processing...
                   </>
                 ) : (
@@ -690,7 +893,7 @@ export default function DashboardPage() {
                 <p className="text-gray-400">Manage payroll recipients (excludes system payees)</p>
               </div>
               <div className="text-sm text-gray-400">
-                Total: {data?.payees.length || 0} payees • {duePayeesCount} due for payment
+                Total: {payeesCount} payees • {duePayeesCount} due for payment
               </div>
             </div>
           </div>
@@ -707,13 +910,6 @@ export default function DashboardPage() {
           <h3 className="text-lg font-semibold text-white mb-4">System Status</h3>
           <div className="space-y-3">
             <div className="flex justify-between items-center">
-              <span className="text-gray-400">Event Listener</span>
-              <div className="flex items-center gap-2">
-                <div className={`w-2 h-2 rounded-full ${isEventListenerActive ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
-                <span className="text-white">{isEventListenerActive ? 'Active' : 'Inactive'}</span>
-              </div>
-            </div>
-            <div className="flex justify-between">
               <span className="text-gray-400">Network</span>
               <span className="text-white">Cronos Testnet</span>
             </div>
@@ -731,6 +927,12 @@ export default function DashboardPage() {
               <span className="text-gray-400">Payroll Trigger Status</span>
               <span className={`font-medium ${shouldTriggerPayrollValue ? 'text-green-400' : 'text-yellow-400'}`}>
                 {shouldTriggerPayrollValue ? 'Ready to Trigger' : 'Conditions Not Met'}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Contract Address</span>
+              <span className="text-white text-xs truncate max-w-[200px]">
+                {CONTRACTS.TREASURY_MANAGER.substring(0, 20)}...
               </span>
             </div>
           </div>
